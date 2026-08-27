@@ -1,0 +1,16 @@
+# Render blueprint. Deploy: push to GitHub, then "New +" -> "Blueprint" in the
+# Render dashboard and point it at this repo. Set the two secret env vars in the
+# dashboard (they are sync: false so they are never stored in the repo).
+services:
+  - type: web
+    name: linkedin-profile-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: LI_AT_COOKIE
+        sync: false
+      - key: LI_JSESSIONID_COOKIE
+        sync: false
