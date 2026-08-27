@@ -233,14 +233,19 @@ the same env vars. For Fly.io, `fly launch` detects the Dockerfile; set
 
 ### Why the Voyager internal API
 
-Four options were considered:
+The brief requires a **purely reverse-engineered solution that hits LinkedIn
+endpoints directly and does not use a browser**. That rules out anything
+DOM/render-based and points straight at LinkedIn's internal HTTP API.
 
 | Option | Verdict |
 |--------|---------|
-| **LinkedIn's internal Voyager API** (`/voyager/api/...`) | **Chosen.** Literally "the LinkedIn API" the brief asks to reverse-engineer. Authenticated with a session cookie, returns structured REST.li JSON — no HTML parsing. |
-| Authenticated headless browser + DOM scraping (Playwright) | Considered as a hedge. Heavier, slower, and brittle to markup changes. Kept as a documented fallback (see below) but not built. |
+| **LinkedIn's internal Voyager API** (`/voyager/api/...`), called directly with `httpx` | **Chosen.** Direct HTTP to LinkedIn's own endpoints, no browser. Authenticated with a session cookie, returns structured REST.li JSON — no HTML parsing. |
+| Headless browser + DOM scraping (Playwright/Selenium) | **Excluded by the brief** (no browser). Also heavier, slower, and brittle to markup changes. No browser-automation dependency exists in this repo. |
 | Third-party scraper APIs (Proxycurl, PhantomBuster, …) | Rejected: doesn't satisfy "build a hosted API" / "reverse engineer". |
 | Official LinkedIn OAuth API | Rejected: only exposes the *authenticated user's own* data, not arbitrary third-party profiles. |
+
+The only browser involvement anywhere is a **one-time manual login** to copy
+the session cookie (below) — a human logging in once, not automation.
 
 ### Why a copied cookie instead of automated login
 
@@ -301,12 +306,12 @@ URL ──▶ extract_public_identifier()      (app/voyager_client.py)
 
 ### Fallback if the `dash` endpoint is also retired
 
-If `FullProfileWithEntities-*` stops working entirely, the next step is to parse
-the SDUI React Flight payloads from the `rsc-action/actions/component` endpoints
-(the data — name, headline, about, experience, education — is present in them as
-text nodes), or to render the page in a cookie-authenticated headless browser
-(no login automation) and scrape the DOM. Both are heavier and more brittle than
-the current approach, which is why they're the fallback.
+If `FullProfileWithEntities-*` stops working entirely, the next step — still a
+direct-HTTP, no-browser approach — is to POST to the SDUI endpoints
+(`/flagship-web/rsc-action/actions/component?componentId=…profileCards*`) and
+parse the React Flight payloads they return; the data (name, headline, about,
+experience, education) is present in them as text nodes. It's heavier to parse
+than the `dash` JSON, which is why it's the fallback and not the primary.
 
 ---
 

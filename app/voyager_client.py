@@ -112,10 +112,7 @@ def _session_was_killed(resp: httpx.Response) -> bool:
 
 class VoyagerClient:
     def __init__(self):
-        self._cookies = load_session_cookies()
-        # httpx wants a plain name->value cookie dict for requests, not the
-        # browser-cookie-style dict list auth.py returns.
-        self._cookie_dict = {c["name"]: c["value"] for c in self._cookies}
+        self._cookie_dict = load_session_cookies()
         csrf_source = self._cookie_dict.get("JSESSIONID", "").strip('"')
         self._headers = dict(DEFAULT_HEADERS)
         if csrf_source:

@@ -8,14 +8,18 @@ structured JSON." Requirements: public HTTPS deployment, GitHub repo,
 README with setup/API docs/approach/limitations, no credentials in the repo.
 
 ## Approach chosen (and why)
-Considered 3 options before starting:
-1. **Voyager internal API** (chosen) — LinkedIn's own web frontend calls
-   undocumented REST endpoints under `/voyager/api/...`. Authenticated via
-   session cookie, returns clean structured JSON directly — matches the
-   brief's literal "reverse engineer the API" framing best.
-2. Authenticated headless browser + DOM scraping (Playwright) — considered
-   as a fallback/hedge, decided against building both; more brittle to
-   LinkedIn's HTML/class-name changes, heavier, slower.
+HARD REQUIREMENT (clarified by the hiring team by email): a purely
+reverse-engineered solution that hits LinkedIn endpoints directly and
+**does not use a browser**. No Playwright/Selenium/headless anything. The
+repo has zero browser-automation dependencies and must stay that way.
+
+Options considered:
+1. **Voyager internal API** (chosen) — call LinkedIn's undocumented REST
+   endpoints under `/voyager/api/...` directly with httpx. Authenticated
+   via session cookie, returns structured REST.li JSON. Satisfies the
+   direct-HTTP / no-browser requirement.
+2. Headless browser + DOM scraping (Playwright/Selenium) — **excluded by
+   the brief.** Also heavier/slower/brittle. Not built, not a dependency.
 3. Third-party scraper APIs (Proxycurl, PhantomBuster, etc.) — rejected,
    doesn't satisfy "build a hosted API" / "reverse engineer" requirement.
 4. Official LinkedIn OAuth API — rejected, only exposes the authenticated
@@ -118,8 +122,13 @@ drift, undocumented-API drift generally, rate-limit surfaced-not-absorbed,
 public-data-only, single-endpoint scope.
 
 ## Constraints / decisions to preserve
-- Do not switch to automating the LinkedIn login form — deliberate decision
-  to avoid bot-detection risk to the account.
+- NO BROWSER. Direct HTTP to LinkedIn endpoints only (hiring-team
+  requirement). Never add Playwright/Selenium/puppeteer/headless-Chrome —
+  not as the solution, not as a fallback, not as a dev dependency. The
+  documented fallback (if the dash endpoint dies) is parsing the SDUI
+  `rsc-action` React Flight payloads — still direct HTTP.
+- Do not automate the LinkedIn login form — cookie is copied manually once
+  by a human (the one allowed browser touch). Avoids bot-detection on login.
 - Do not add a third-party scraping API as a dependency/fallback — would
   undercut the "reverse engineer" requirement of the brief.
 - Keep parser.py defensive/non-crashing on missing fields — this is a
