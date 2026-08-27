@@ -7,3 +7,7 @@ venv/
 .pytest_cache/
 .DS_Store
 voyager_raw.json
+dash_profile_raw.json
+*.har
+*.har.txt
+linkedin.har*

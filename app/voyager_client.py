@@ -1,23 +1,44 @@
 """
 Thin HTTP client for LinkedIn's internal "Voyager" API — the same
-undocumented REST.li backend linkedin.com's own frontend calls when you
-browse a profile. Reverse-engineered by inspecting the Network tab while
-browsing a profile page while logged in (DevTools -> Network -> filter
-`voyager`).
+undocumented REST.li backend linkedin.com and the LinkedIn mobile apps call.
+Reverse-engineered by capturing traffic from a logged-in session
+(DevTools -> Network -> filter `voyager`) and probing sibling endpoints.
 
-Key facts about this API surface:
-- It's authenticated via the `li_at` session cookie (see auth.py).
-- Every mutating-looking call (even some GETs) requires a CSRF token sent
-  as the `csrf-token` header, whose value is the `JSESSIONID` cookie value
-  (LinkedIn re-uses the session id as the CSRF token).
-- Responses follow the REST.li "included" pattern: instead of one nested
-  JSON tree, entities (Profile, Position, Education, Skill, Certification,
-  Language...) are returned as a flat list, each tagged with a `$type` and
-  cross-referenced by URN. The parser (parser.py) is responsible for
-  stitching these back together.
-- LinkedIn changes field names and endpoint paths periodically. If this
-  starts returning unexpected shapes, re-capture the request from a live
-  browser session (DevTools Network tab) and diff against what's here.
+State of play (verified Aug 2026):
+
+- The old bundled endpoint
+  `/voyager/api/identity/profiles/{publicId}/profileView` is **gone**
+  (HTTP 410). LinkedIn's website migrated the profile page to Server-Driven
+  UI (React Server Components) and no longer calls a single JSON endpoint.
+
+- The data is still reachable through the newer "dash" (Data Access Layer)
+  endpoint, which the mobile clients still use:
+
+      GET /voyager/api/identity/dash/profiles
+          ?q=memberIdentity
+          &memberIdentity=<publicIdentifier or profile-id>
+          &decorationId=com.linkedin.voyager.dash.deco
+                        .identity.profile.FullProfileWithEntities-<N>
+
+  `decorationId` selects a server-side projection: which nested entities
+  (positions, educations, skills, certifications, languages, ...) get
+  inlined into the response. The `-<N>` suffix is a version LinkedIn bumps
+  periodically; `PROFILE_DECORATION_ID` below is the one confirmed working.
+  If it starts 4xx-ing, try adjacent versions (`-92`, `-94`, ...) or
+  re-capture from a live session.
+
+- Auth is the `li_at` session cookie (see auth.py). Voyager also wants a
+  `csrf-token` header whose value is the `JSESSIONID` cookie with the
+  surrounding quotes stripped.
+
+- The response follows the REST.li "included" convention: a flat list of
+  typed entities (`$type`), cross-referenced by URN, rather than one nested
+  document. parser.py stitches them back together.
+
+- LinkedIn actively flags bursts of unusual requests: it replies 302 to a
+  redirect loop *and* sends `set-cookie: li_at=delete me` to kill the
+  session. `_get` detects that and raises SessionExpiredError. Keep request
+  volume low.
 """
 
 import logging
@@ -33,12 +54,17 @@ logger = logging.getLogger("linkedin_api.voyager")
 
 BASE_URL = "https://www.linkedin.com"
 
+PROFILE_PATH = "/voyager/api/identity/dash/profiles"
+PROFILE_DECORATION_ID = (
+    "com.linkedin.voyager.dash.deco.identity.profile.FullProfileWithEntities-93"
+)
+
 # Mimic a real browser's client hints; Voyager rejects requests that look
 # obviously non-browser (missing these headers, or a generic UA, is one of
 # the more common causes of an unexplained 999/403).
 DEFAULT_HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept": "application/vnd.linkedin.normalized+json+2.1",
@@ -75,12 +101,20 @@ def extract_public_identifier(profile_url: str) -> str:
     return match.group(1)
 
 
+def _session_was_killed(resp: httpx.Response) -> bool:
+    """
+    LinkedIn's block response: 3xx to a redirect loop plus a Set-Cookie that
+    expires li_at ("delete me"). Treat that as a dead session, not a redirect.
+    """
+    set_cookie = resp.headers.get("set-cookie", "")
+    return "li_at=delete" in set_cookie or 'li_at="delete' in set_cookie
+
+
 class VoyagerClient:
     def __init__(self):
         self._cookies = load_session_cookies()
         # httpx wants a plain name->value cookie dict for requests, not the
-        # Playwright-style dict list we use elsewhere (auth.py is shared
-        # infra for both a browser-based and an httpx-based path).
+        # browser-cookie-style dict list auth.py returns.
         self._cookie_dict = {c["name"]: c["value"] for c in self._cookies}
         csrf_source = self._cookie_dict.get("JSESSIONID", "").strip('"')
         self._headers = dict(DEFAULT_HEADERS)
@@ -95,23 +129,32 @@ class VoyagerClient:
         ) as client:
             resp = await client.get(url, params=params)
 
-        # LinkedIn signals a dead/invalid session by redirecting to the
-        # login wall rather than returning a clean 401.
-        if resp.status_code in (301, 302, 303) and "authwall" in resp.headers.get(
-            "location", ""
-        ):
+        if _session_was_killed(resp):
             raise SessionExpiredError(
-                "LinkedIn redirected to the auth wall — the session cookie "
-                "is expired or invalid. Refresh LI_AT_COOKIE."
+                "LinkedIn killed the session (cookie-delete redirect) — the "
+                "request pattern was flagged, or li_at is invalid. Get a "
+                "fresh li_at + JSESSIONID and reduce request volume."
+            )
+        # A plain redirect to the auth wall is the older expiry signal.
+        if resp.status_code in (301, 302, 303):
+            loc = resp.headers.get("location", "")
+            if "authwall" in loc or "/login" in loc or "checkpoint" in loc:
+                raise SessionExpiredError(
+                    "LinkedIn redirected to the auth wall — the session "
+                    "cookie is expired or invalid. Refresh LI_AT_COOKIE."
+                )
+            raise SessionExpiredError(
+                f"Unexpected redirect ({resp.status_code}) to {loc!r} — "
+                "session is likely flagged or expired."
             )
         if resp.status_code == 404:
             raise ProfileNotFoundError(f"No profile found for path: {path}")
-        if resp.status_code == 999 or resp.status_code == 429:
+        if resp.status_code in (429, 999):
             raise VoyagerRateLimitedError(
                 "LinkedIn rate-limited or soft-blocked this request "
                 f"(status {resp.status_code}). Back off and retry later."
             )
-        if resp.status_code == 401 or resp.status_code == 403:
+        if resp.status_code in (401, 403):
             raise SessionExpiredError(
                 f"Voyager returned {resp.status_code} — session cookie is "
                 "likely expired, or the csrf-token header is stale/missing."
@@ -124,11 +167,17 @@ class VoyagerClient:
             logger.error("Non-JSON Voyager response for %s: %s", path, resp.text[:500])
             raise
 
-    async def get_profile_view(self, public_identifier: str) -> Dict[str, Any]:
+    async def get_profile(self, public_identifier: str) -> Dict[str, Any]:
         """
-        Calls the bundled profileView endpoint, which returns the summary
-        profile plus positions, education, skills, certifications and
-        languages in one response (as a flat `included` entity list).
+        Fetch the full profile projection (summary + positions, educations,
+        skills, certifications, languages) as one REST.li `included` list.
+
+        `public_identifier` is the `/in/<slug>` value; the profile-id form
+        (`ACoAAA...`) also works as `memberIdentity`.
         """
-        path = f"/voyager/api/identity/profiles/{public_identifier}/profileView"
-        return await self._get(path)
+        params = {
+            "q": "memberIdentity",
+            "memberIdentity": public_identifier,
+            "decorationId": PROFILE_DECORATION_ID,
+        }
+        return await self._get(PROFILE_PATH, params=params)

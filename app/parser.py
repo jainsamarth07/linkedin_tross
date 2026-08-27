@@ -1,46 +1,88 @@
 """
-Voyager responses use the REST.li "included" convention: rather than one
-nested JSON document, the API returns a flat list of typed entities
-(Profile, Position, Education, Skill, Certification, Language, ...), each
-tagged with a `$type` field. This module walks that list and reassembles it
-into the clean schema defined in models.py.
+Turns a Voyager `identity/dash/profiles` response into the clean schema in
+models.py.
 
-NOTE ON FRAGILITY: this mapping was built from the well-documented public
-shape of this endpoint (the same one several open-source LinkedIn API
-wrappers rely on), not verified against a live response in this
-environment. Field names occasionally drift when LinkedIn ships frontend
-changes. Every extraction below is defensive (missing key -> None / skip)
-so a schema drift degrades individual fields rather than crashing the
-whole request — but if you see a section come back consistently empty,
-capture a real response (see README "Debugging Voyager responses") and
-diff the $type / field names against what's expected here.
+The response uses the REST.li "included" convention: a flat list of typed
+entities (`$type`), cross-referenced by `entityUrn`. Star-prefixed fields
+(`*company`, `*school`, `*geo`) hold a URN that points at another entity in
+the same `included` list; `_Resolver` does that lookup.
+
+Entity `$type`s we care about (all under
+`com.linkedin.voyager.dash.`):
+  identity.profile.Profile      - the summary card
+  identity.profile.Position     - one row of Experience
+  identity.profile.Education    - one row of Education
+  organization.Company          - employer (name, logo, url)
+  organization.School           - school (name, logo, url)
+  common.Geo                    - a resolved location string
+
+FRAGILITY: field names here were verified against a live response
+(Aug 2026) but LinkedIn drifts them without notice. Every read is a
+defensive `.get()` chain so drift degrades one field to `null` and records
+a note in `warnings` rather than crashing the request. If a whole section
+comes back empty, re-capture with `python -m scripts.dump_voyager <url>`
+and diff `$type` / keys against this file.
+
+NOT in this response (decoration FullProfileWithEntities-93 does not inline
+them): skills, certifications, languages. They live behind separate
+`dash/profileSkills` / `dash/profileCertifications` / `dash/profileLanguages`
+calls; fetching them would mean extra requests per profile, which we avoid
+to keep LinkedIn's bot-defenses calm. Those lists come back empty with a
+warning.
 """
 
 import logging
 from typing import Any, Dict, List, Optional
 
 from .models import (
-    Certification,
     Education,
     Experience,
-    Language,
     LinkedInProfile,
     ProfileImages,
-    Skill,
 )
 
 logger = logging.getLogger("linkedin_api.parser")
 
-TYPE_PROFILE = "identity.profile.Profile"
-TYPE_POSITION = "identity.profile.Position"
-TYPE_EDUCATION = "identity.profile.Education"
-TYPE_SKILL = "identity.profile.Skill"
-TYPE_CERTIFICATION = "identity.profile.Certification"
-TYPE_LANGUAGE = "identity.profile.Language"
+T_PROFILE = "identity.profile.Profile"
+T_POSITION = "identity.profile.Position"
+T_EDUCATION = "identity.profile.Education"
+T_COMPANY = "organization.Company"
+T_SCHOOL = "organization.School"
+T_GEO = "common.Geo"
 
 
-def _entities_of_type(included: List[Dict[str, Any]], suffix: str) -> List[Dict[str, Any]]:
-    return [e for e in included if str(e.get("$type", "")).endswith(suffix)]
+class _Resolver:
+    """Look entities up by URN within one `included` list."""
+
+    def __init__(self, included: List[Dict[str, Any]]):
+        self._by_urn: Dict[str, Dict[str, Any]] = {}
+        for e in included:
+            urn = e.get("entityUrn")
+            if urn:
+                self._by_urn[urn] = e
+
+    def get(self, urn: Optional[str]) -> Dict[str, Any]:
+        if not urn:
+            return {}
+        return self._by_urn.get(urn, {})
+
+    def of_type(self, included: List[Dict[str, Any]], suffix: str) -> List[Dict[str, Any]]:
+        return [e for e in included if str(e.get("$type", "")).endswith(suffix)]
+
+
+def _localized(entity: Dict[str, Any], field: str) -> Optional[str]:
+    """
+    Prefer the plain scalar field; fall back to the first value of the
+    matching `multiLocale<Field>` map (e.g. multiLocaleTitle -> {"en_US": ...}).
+    """
+    val = entity.get(field)
+    if not val:
+        multi = entity.get("multiLocale" + field[:1].upper() + field[1:])
+        if isinstance(multi, dict) and multi:
+            val = next(iter(multi.values()))
+    if isinstance(val, str):
+        val = val.strip()
+    return val or None
 
 
 def _format_date(date_obj: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -55,11 +97,11 @@ def _format_date(date_obj: Optional[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
-def _format_duration(time_period: Optional[Dict[str, Any]]) -> Dict[str, Optional[str]]:
-    if not time_period:
+def _format_date_range(date_range: Optional[Dict[str, Any]]) -> Dict[str, Optional[str]]:
+    if not date_range:
         return {"duration": None, "start": None, "end": None}
-    start = _format_date(time_period.get("startDate"))
-    end = _format_date(time_period.get("endDate"))
+    start = _format_date(date_range.get("start"))
+    end = _format_date(date_range.get("end"))
     if start and end:
         duration = f"{start} - {end}"
     elif start:
@@ -71,20 +113,15 @@ def _format_duration(time_period: Optional[Dict[str, Any]]) -> Dict[str, Optiona
 
 def _best_image_url(picture_obj: Optional[Dict[str, Any]]) -> Optional[str]:
     """
-    Profile/background pictures come back as a `vectorImage`-style object:
-    a rootUrl plus a list of artifacts (different resolutions), each with a
-    partial path segment. We take the largest available artifact.
-    Real shape (approximately):
-      {"displayImageReference": {"vectorImage": {
-          "rootUrl": "https://media.licdn.com/dms/image/...",
-          "artifacts": [{"width": 800, "fileIdentifyingUrlPathSegment": "..."}]
-      }}}
+    Picture objects are a `vectorImage` (rootUrl + resolution artifacts),
+    sometimes wrapped in `displayImageReference`. Return the largest
+    artifact's full URL.
     """
     if not picture_obj:
         return None
-    vector = (picture_obj.get("displayImageReference") or {}).get("vectorImage") or picture_obj.get(
+    vector = (picture_obj.get("displayImageReference") or {}).get(
         "vectorImage"
-    )
+    ) or picture_obj.get("vectorImage")
     if not vector:
         return None
     root = vector.get("rootUrl")
@@ -96,26 +133,40 @@ def _best_image_url(picture_obj: Optional[Dict[str, Any]]) -> Optional[str]:
     return f"{root}{segment}" if segment else root
 
 
-def parse_profile_view(raw: Dict[str, Any], profile_url: str, scraped_at: str) -> LinkedInProfile:
+def _company_logo(resolver: _Resolver, entity: Dict[str, Any]) -> Optional[str]:
+    company = resolver.get(entity.get("*company") or entity.get("companyUrn"))
+    return _best_image_url(company.get("logo")) if company else None
+
+
+def _location_string(resolver: _Resolver, profile: Dict[str, Any]) -> Optional[str]:
+    geo_ref = profile.get("geoLocation") or {}
+    geo = resolver.get(geo_ref.get("*geo") or geo_ref.get("geoUrn"))
+    if geo.get("defaultLocalizedName"):
+        return geo["defaultLocalizedName"]
+    # older/leaner shapes
+    return profile.get("locationName") or (profile.get("location") or {}).get(
+        "countryCode"
+    )
+
+
+def parse_profile(raw: Dict[str, Any], profile_url: str, scraped_at: str) -> LinkedInProfile:
     warnings: List[str] = []
     included = raw.get("included", [])
     if not included:
         warnings.append(
             "Voyager response had no 'included' entities — the response "
-            "shape may have changed, or this profile has restricted "
-            "visibility for the current session."
+            "shape may have changed, or this profile is not visible to the "
+            "current session."
         )
 
-    profile_entities = _entities_of_type(included, TYPE_PROFILE)
+    resolver = _Resolver(included)
+
+    profile_entities = resolver.of_type(included, T_PROFILE)
     profile = profile_entities[0] if profile_entities else {}
     if not profile_entities:
         warnings.append("No Profile entity found in response.")
 
-    first_name = profile.get("firstName", "")
-    last_name = profile.get("lastName", "")
-    name = f"{first_name} {last_name}".strip() or None
-
-    location = profile.get("geoLocationName") or profile.get("locationName")
+    name = f"{profile.get('firstName', '')} {profile.get('lastName', '')}".strip() or None
 
     images = ProfileImages(
         profile_photo_url=_best_image_url(profile.get("profilePicture")),
@@ -123,89 +174,66 @@ def parse_profile_view(raw: Dict[str, Any], profile_url: str, scraped_at: str) -
     )
 
     experience: List[Experience] = []
-    for pos in _entities_of_type(included, TYPE_POSITION):
-        d = _format_duration(pos.get("timePeriod"))
+    for pos in resolver.of_type(included, T_POSITION):
+        d = _format_date_range(pos.get("dateRange"))
         experience.append(
             Experience(
-                title=pos.get("title"),
-                company=pos.get("companyName")
-                or (pos.get("company") or {}).get("miniCompany", {}).get("name"),
-                employment_type=pos.get("employmentType"),
+                title=_localized(pos, "title"),
+                company=_localized(pos, "companyName"),
+                employment_type=_localized(pos, "employmentType"),
                 duration=d["duration"],
                 start_date=d["start"],
                 end_date=d["end"],
-                location=pos.get("locationName"),
-                description=pos.get("description"),
-                company_logo_url=_best_image_url(
-                    (pos.get("company") or {}).get("miniCompany", {}).get("logo")
-                ),
+                location=_localized(pos, "locationName"),
+                description=_localized(pos, "description"),
+                company_logo_url=_company_logo(resolver, pos),
             )
         )
 
     education: List[Education] = []
-    for edu in _entities_of_type(included, TYPE_EDUCATION):
-        d = _format_duration(edu.get("timePeriod"))
+    for edu in resolver.of_type(included, T_EDUCATION):
+        d = _format_date_range(edu.get("dateRange"))
+        school = resolver.get(edu.get("*school") or edu.get("schoolUrn"))
         education.append(
             Education(
-                school=edu.get("schoolName"),
-                degree=edu.get("degreeName"),
-                field_of_study=edu.get("fieldOfStudy"),
+                school=_localized(edu, "schoolName") or school.get("name"),
+                degree=_localized(edu, "degreeName"),
+                field_of_study=_localized(edu, "fieldOfStudy"),
                 duration=d["duration"],
                 start_date=d["start"],
                 end_date=d["end"],
-                description=edu.get("description"),
-                school_logo_url=_best_image_url(edu.get("school", {}).get("logo")),
+                description=_localized(edu, "description"),
+                school_logo_url=_best_image_url(school.get("logo")),
             )
         )
-
-    skills: List[Skill] = []
-    for sk in _entities_of_type(included, TYPE_SKILL):
-        sk_name = sk.get("name")
-        if sk_name:
-            skills.append(
-                Skill(name=sk_name, endorsement_count=sk.get("endorsementCount"))
-            )
-
-    certifications: List[Certification] = []
-    for cert in _entities_of_type(included, TYPE_CERTIFICATION):
-        d = _format_duration(cert.get("timePeriod"))
-        certifications.append(
-            Certification(
-                name=cert.get("name"),
-                issuing_organization=cert.get("authority"),
-                issue_date=d["start"],
-                credential_id=cert.get("licenseNumber"),
-                credential_url=cert.get("url"),
-            )
-        )
-
-    languages: List[Language] = []
-    for lang in _entities_of_type(included, TYPE_LANGUAGE):
-        lang_name = lang.get("name")
-        if lang_name:
-            languages.append(
-                Language(name=lang_name, proficiency=lang.get("proficiency"))
-            )
 
     if not experience:
         warnings.append("No experience entries parsed.")
     if not education:
         warnings.append("No education entries parsed.")
+    warnings.append(
+        "Skills, certifications and languages are not included by this "
+        "endpoint's projection and are returned empty (see README limitations)."
+    )
 
     return LinkedInProfile(
         profile_url=profile_url,
         name=name,
         headline=profile.get("headline"),
-        location=location,
+        location=_location_string(resolver, profile),
         about=profile.get("summary"),
-        connections=str(profile.get("connections")) if profile.get("connections") else None,
-        followers=str(profile.get("followersCount")) if profile.get("followersCount") else None,
+        connections=None,
+        followers=None,
         images=images,
         experience=experience,
         education=education,
-        skills=skills,
-        certifications=certifications,
-        languages=languages,
+        skills=[],
+        certifications=[],
+        languages=[],
         scraped_at=scraped_at,
         warnings=warnings,
     )
+
+
+# Back-compat alias: the module used to expose parse_profile_view.
+parse_profile_view = parse_profile

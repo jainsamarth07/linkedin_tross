@@ -1,29 +1,39 @@
 """
-Synthetic Voyager `profileView` response used by the parser tests.
+Synthetic Voyager `identity/dash/profiles` response for the parser tests.
 
-This is hand-built to match the REST.li `included` shape parser.py expects
-(a flat list of typed entities). It is NOT a captured real response — the
-real one has more entities and more fields — but it exercises every branch
-of parse_profile_view: profile summary, images, positions, education,
-skills, certifications and languages.
+Hand-built to match the REST.li `included` shape observed in a real
+Aug-2026 response: a flat entity list, star-prefixed URN refs
+(`*company`, `*school`, `*geo`) pointing at sibling entities, `dateRange`
+with `Date` sub-objects, `multiLocale*` maps. Trimmed to what
+`parse_profile` reads.
 """
 
-MOCK_PROFILE_VIEW = {
+PROFILE_ID = "ACoAAATEST00000000000000000000000000000"
+
+MOCK_DASH_PROFILE = {
+    "data": {
+        "entityUrn": "urn:li:collectionResponse:test",
+        "*elements": [f"urn:li:fsd_profile:{PROFILE_ID}"],
+        "$type": "com.linkedin.restli.common.CollectionResponse",
+    },
     "included": [
         {
-            "$type": "com.linkedin.voyager.identity.profile.Profile",
+            "$type": "com.linkedin.voyager.dash.identity.profile.Profile",
+            "entityUrn": f"urn:li:fsd_profile:{PROFILE_ID}",
             "firstName": "Ada",
             "lastName": "Lovelace",
-            "headline": "Mathematician | Writing the first algorithm",
-            "geoLocationName": "London, England, United Kingdom",
-            "summary": "Fascinated by the Analytical Engine and what it could compute.",
+            "headline": "Mathematician | First algorithm",
+            "summary": "Fascinated by the Analytical Engine.",
+            "publicIdentifier": "ada-lovelace",
+            "locationName": None,
+            "geoLocation": {"*geo": "urn:li:fsd_geo:555"},
             "profilePicture": {
                 "displayImageReference": {
                     "vectorImage": {
                         "rootUrl": "https://media.licdn.com/dms/image/pp/",
                         "artifacts": [
-                            {"width": 100, "fileIdentifyingUrlPathSegment": "100_100/x.jpg"},
-                            {"width": 800, "fileIdentifyingUrlPathSegment": "800_800/x.jpg"},
+                            {"width": 100, "fileIdentifyingUrlPathSegment": "100/a.jpg"},
+                            {"width": 800, "fileIdentifyingUrlPathSegment": "800/a.jpg"},
                         ],
                     }
                 }
@@ -33,63 +43,74 @@ MOCK_PROFILE_VIEW = {
                     "vectorImage": {
                         "rootUrl": "https://media.licdn.com/dms/image/bg/",
                         "artifacts": [
-                            {"width": 1400, "fileIdentifyingUrlPathSegment": "1400_425/y.jpg"},
+                            {"width": 1400, "fileIdentifyingUrlPathSegment": "1400/b.jpg"},
                         ],
                     }
                 }
             },
         },
         {
-            "$type": "com.linkedin.voyager.identity.profile.Position",
+            "$type": "com.linkedin.voyager.dash.common.Geo",
+            "entityUrn": "urn:li:fsd_geo:555",
+            "defaultLocalizedName": "London, England, United Kingdom",
+        },
+        {
+            "$type": "com.linkedin.voyager.dash.identity.profile.Position",
+            "entityUrn": f"urn:li:fsd_profilePosition:({PROFILE_ID},1)",
             "title": "Collaborator",
             "companyName": "Analytical Engine Project",
-            "employmentType": "Full-time",
-            "locationName": "London, United Kingdom",
-            "description": "Translated and annotated Menabrea's memoir.",
-            "timePeriod": {
-                "startDate": {"month": 1, "year": 1842},
-                "endDate": {"month": 12, "year": 1843},
+            "multiLocaleTitle": {"en_US": "Collaborator"},
+            "description": "Annotated Menabrea's memoir.",
+            "*company": "urn:li:fsd_company:111",
+            "dateRange": {
+                "start": {"month": 1, "year": 1842},
+                "end": {"month": 12, "year": 1843},
             },
         },
         {
-            "$type": "com.linkedin.voyager.identity.profile.Position",
+            "$type": "com.linkedin.voyager.dash.identity.profile.Position",
+            "entityUrn": f"urn:li:fsd_profilePosition:({PROFILE_ID},2)",
             "title": "Independent Researcher",
-            "companyName": "Self-employed",
-            "timePeriod": {"startDate": {"month": 6, "year": 1843}},
+            "multiLocaleCompanyName": {"en_US": "Self-employed"},
+            "dateRange": {"start": {"year": 1843}},
         },
         {
-            "$type": "com.linkedin.voyager.identity.profile.Education",
+            "$type": "com.linkedin.voyager.dash.organization.Company",
+            "entityUrn": "urn:li:fsd_company:111",
+            "name": "Analytical Engine Project",
+            "url": "https://www.linkedin.com/company/analytical-engine/",
+            "logo": {
+                "vectorImage": {
+                    "rootUrl": "https://media.licdn.com/dms/image/co/",
+                    "artifacts": [
+                        {"width": 200, "fileIdentifyingUrlPathSegment": "200/c.png"},
+                    ],
+                }
+            },
+        },
+        {
+            "$type": "com.linkedin.voyager.dash.identity.profile.Education",
+            "entityUrn": f"urn:li:fsd_profileEducation:({PROFILE_ID},1)",
             "schoolName": "Private tutoring",
             "degreeName": "Mathematics & Science",
             "fieldOfStudy": "Mathematics",
-            "timePeriod": {"startDate": {"year": 1833}, "endDate": {"year": 1840}},
+            "description": None,
+            "*school": "urn:li:fsd_school:222",
+            "dateRange": {"start": {"year": 1833}, "end": {"year": 1840}},
         },
         {
-            "$type": "com.linkedin.voyager.identity.profile.Skill",
-            "name": "Analytical Engines",
-            "endorsementCount": 42,
+            "$type": "com.linkedin.voyager.dash.organization.School",
+            "entityUrn": "urn:li:fsd_school:222",
+            "name": "Private tutoring",
+            "url": "https://www.linkedin.com/school/tutoring/",
+            "logo": {
+                "vectorImage": {
+                    "rootUrl": "https://media.licdn.com/dms/image/sc/",
+                    "artifacts": [
+                        {"width": 200, "fileIdentifyingUrlPathSegment": "200/d.png"},
+                    ],
+                }
+            },
         },
-        {
-            "$type": "com.linkedin.voyager.identity.profile.Skill",
-            "name": "Technical Writing",
-        },
-        {
-            "$type": "com.linkedin.voyager.identity.profile.Certification",
-            "name": "Certificate in Calculus",
-            "authority": "Somerville",
-            "licenseNumber": "CALC-1837",
-            "url": "https://example.com/cert",
-            "timePeriod": {"startDate": {"month": 3, "year": 1837}},
-        },
-        {
-            "$type": "com.linkedin.voyager.identity.profile.Language",
-            "name": "English",
-            "proficiency": "NATIVE_OR_BILINGUAL",
-        },
-        {
-            "$type": "com.linkedin.voyager.identity.profile.Language",
-            "name": "French",
-            "proficiency": "PROFESSIONAL_WORKING",
-        },
-    ]
+    ],
 }

@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timezone
 
-from .parser import parse_profile_view
+from .parser import parse_profile
 from .voyager_client import VoyagerClient, extract_public_identifier
 
 logger = logging.getLogger("linkedin_api.scraper")
@@ -16,6 +16,6 @@ async def scrape_profile(profile_url: str):
     """
     public_id = extract_public_identifier(profile_url)
     client = VoyagerClient()
-    raw = await client.get_profile_view(public_id)
+    raw = await client.get_profile(public_id)
     scraped_at = datetime.now(timezone.utc).isoformat()
-    return parse_profile_view(raw, profile_url, scraped_at)
+    return parse_profile(raw, profile_url, scraped_at)
