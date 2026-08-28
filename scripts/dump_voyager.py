@@ -36,6 +36,7 @@ except ImportError:
 
 from app.voyager_client import (
     BASE_URL,
+    OUTBOUND_PROXY,
     PROFILE_DECORATION_ID,
     PROFILE_PATH,
     VoyagerClient,
@@ -60,8 +61,8 @@ async def main(url: str) -> None:
     }
 
     async with httpx.AsyncClient(
-        cookies=vc._cookie_dict, headers=headers, timeout=25.0,
-        follow_redirects=False,
+        cookies=vc._cookie_dict, headers=headers, timeout=30.0,
+        follow_redirects=False, proxy=OUTBOUND_PROXY,
     ) as client:
         r = await client.get(f"{BASE_URL}{PROFILE_PATH}", params=params)
 

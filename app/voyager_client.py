@@ -42,6 +42,7 @@ State of play (verified Aug 2026):
 """
 
 import logging
+import os
 import re
 from typing import Any, Dict
 from urllib.parse import urlparse
@@ -53,6 +54,14 @@ from .auth import load_session_cookies
 logger = logging.getLogger("linkedin_api.voyager")
 
 BASE_URL = "https://www.linkedin.com"
+
+# Outbound proxy for the LinkedIn calls. LinkedIn flags datacenter IPs
+# (Render/Fly/etc.) fast — a deployed instance needs to egress through a
+# residential/mobile proxy or it gets its session killed within a request
+# or two. Set OUTBOUND_PROXY to a full proxy URL, e.g.
+#   http://user:pass@gate.smartproxy.com:7000
+# Left unset, requests go direct (fine for local runs from a home IP).
+OUTBOUND_PROXY = os.environ.get("OUTBOUND_PROXY") or None
 
 PROFILE_PATH = "/voyager/api/identity/dash/profiles"
 PROFILE_DECORATION_ID = (
@@ -121,8 +130,8 @@ class VoyagerClient:
     async def _get(self, path: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         url = f"{BASE_URL}{path}"
         async with httpx.AsyncClient(
-            cookies=self._cookie_dict, headers=self._headers, timeout=20.0,
-            follow_redirects=False,
+            cookies=self._cookie_dict, headers=self._headers, timeout=30.0,
+            follow_redirects=False, proxy=OUTBOUND_PROXY,
         ) as client:
             resp = await client.get(url, params=params)
 

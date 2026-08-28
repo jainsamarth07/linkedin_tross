@@ -104,6 +104,7 @@ copy the resulting session cookies into environment variables. (Rationale in
 |-------------------------|----------|---------|
 | `LI_AT_COOKIE`          | **Yes**  | LinkedIn session cookie. The app refuses to start a request without it. |
 | `LI_JSESSIONID_COOKIE`  | **Yes** in practice | Supplies the `csrf-token` header. The `dash` profile endpoint 302s / 403s without a matching CSRF token. |
+| `OUTBOUND_PROXY`        | **Yes** when deployed | Full proxy URL (`http://user:pass@host:port`) for the LinkedIn calls. Without it, requests from a cloud/datacenter IP get the session killed within a request or two — see [limitations](#known-limitations). Leave unset for local runs from a home IP. |
 | `PORT`                  | No       | Port to bind (injected by most PaaS hosts; defaults to `8000`). |
 
 `.env` is git-ignored. `.env.example` documents the variables with no values.
@@ -224,9 +225,11 @@ blueprint for [Render](https://render.com).
 1. Push this repo to GitHub.
 2. Render dashboard → **New +** → **Blueprint** → pick the repo. It reads
    `render.yaml` and creates a Docker web service with a `/health` check.
-3. In the service's **Environment** settings add `LI_AT_COOKIE` and
-   `LI_JSESSIONID_COOKIE` (declared `sync: false`, so Render prompts for them
-   and never stores them in the repo).
+3. In the service's **Environment** settings add `LI_AT_COOKIE`,
+   `LI_JSESSIONID_COOKIE`, and `OUTBOUND_PROXY` (all declared `sync: false`, so
+   Render prompts for them and never stores them in the repo).
+   **`OUTBOUND_PROXY` is not optional here** — without a residential proxy,
+   Render's datacenter IP gets the LinkedIn session killed after ~1 request.
 4. Deploy → public `https://<name>.onrender.com` URL.
 
 **Cold starts:** Render's free web service spins down after ~15 min idle and
@@ -332,17 +335,27 @@ than the `dash` JSON, which is why it's the fallback and not the primary.
 
 These are real. An honest list beats a submission that pretends they don't exist.
 
-- **LinkedIn's bot defense is aggressive, and sessions get killed fast.**
-  During development, a burst of ~12 endpoint-probe requests from a residential
-  IP got the session flagged; LinkedIn then responded `302` to a redirect loop
-  with `Set-Cookie: li_at=delete me` (a hard session kill) after only **1–2**
-  further requests, even on a freshly-issued cookie from the same IP. The client
-  detects this specific response and raises `SessionExpiredError` → `401`. There
-  is **no auto-relogin**. Practical consequences:
-  - keep request volume low (this app makes **one** Voyager call per profile);
-  - expect to refresh cookies often;
-  - a flagged IP stays hot for hours — the deployment IP matters, and a
-    datacenter IP will likely be worse than residential.
+- **LinkedIn's bot defense is aggressive, and sessions get killed fast —
+  especially from datacenter IPs.** During development, a burst of ~12
+  endpoint-probe requests from a residential IP got the session flagged;
+  LinkedIn then responded `302` to a redirect loop with
+  `Set-Cookie: li_at=delete me` (a hard session kill) after only **1–2**
+  further requests, even on a freshly-issued cookie. The **deployed** instance
+  showed the same thing more sharply: from Render's datacenter IP, one profile
+  fetch succeeded and the **very next request killed the session**. The client
+  detects this response and raises `SessionExpiredError` → `401`. There is
+  **no auto-relogin**. Practical consequences:
+  - **A cloud deployment needs `OUTBOUND_PROXY` set to a residential/mobile
+    proxy.** Without it, a datacenter-hosted instance is good for roughly one
+    request before the session dies. With a residential proxy + slow pacing,
+    community-reported sustainable rates are ~100–300 profiles/day on an aged
+    account.
+  - This app makes **one** Voyager call per profile by design; keep external
+    request volume low on top of that.
+  - Expect to refresh `LI_AT_COOKIE` / `LI_JSESSIONID_COOKIE` often. A flagged
+    IP/cookie pair stays hot for hours.
+  - No request throttling or backoff is built in — that, plus an account/proxy
+    pool, is what a production version would need. Out of scope here.
 - **`decorationId` version drift.** `FullProfileWithEntities-93` is hard-coded.
   When LinkedIn bumps it, the endpoint starts returning `302`/`4xx`. Fix: try
   adjacent versions or re-capture from a live session

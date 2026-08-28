@@ -14,3 +14,7 @@ services:
         sync: false
       - key: LI_JSESSIONID_COOKIE
         sync: false
+      # Residential/mobile proxy URL. Required on Render — a datacenter IP
+      # gets the LinkedIn session killed after ~1 request without it.
+      - key: OUTBOUND_PROXY
+        sync: false
