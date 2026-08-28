@@ -11,3 +11,6 @@ dash_profile_raw.json
 *.har
 *.har.txt
 linkedin.har*
+mycurl.txt
+*.curl.txt
+curl*.txt
