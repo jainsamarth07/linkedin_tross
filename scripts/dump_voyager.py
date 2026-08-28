@@ -25,8 +25,6 @@ import os
 import sys
 from collections import Counter
 
-from curl_cffi.requests import AsyncSession
-
 try:
     from dotenv import load_dotenv
 
@@ -35,13 +33,10 @@ except ImportError:
     pass
 
 from app.voyager_client import (
-    BASE_URL,
-    IMPERSONATE_TARGET,
-    PROFILE_DECORATION_ID,
-    PROFILE_PATH,
+    ProfileNotFoundError,
+    SessionExpiredError,
     VoyagerClient,
-    _proxies,
-    _session_was_killed,
+    VoyagerRateLimitedError,
     extract_public_identifier,
 )
 
@@ -49,46 +44,21 @@ OUT = "dash_profile_raw.json"
 
 
 async def main(url: str) -> None:
-    if not os.environ.get("LI_AT_COOKIE"):
-        sys.exit("LI_AT_COOKIE is not set (put it in .env or export it).")
+    if not (os.environ.get("LI_AT_COOKIE") or os.environ.get("LI_COOKIE_STRING")):
+        sys.exit("Set LI_AT_COOKIE (or LI_COOKIE_STRING) in .env or the env.")
 
     slug = extract_public_identifier(url)
-    vc = VoyagerClient()
-    headers = dict(vc._headers)
-    headers["accept"] = "application/vnd.linkedin.normalized+json+2.1"
-    params = {
-        "q": "memberIdentity",
-        "memberIdentity": slug,
-        "decorationId": PROFILE_DECORATION_ID,
-    }
+    # Reuse the exact production request path (headers, cookies, proxy,
+    # impersonation, error handling all identical to the running API).
+    try:
+        raw = await VoyagerClient().get_profile(slug)
+    except SessionExpiredError as e:
+        sys.exit(f"\nSESSION KILLED / EXPIRED: {e}")
+    except VoyagerRateLimitedError as e:
+        sys.exit(f"\nRATE-LIMITED: {e}")
+    except ProfileNotFoundError as e:
+        sys.exit(f"\nNOT FOUND: {e}")
 
-    async with AsyncSession() as session:
-        r = await session.get(
-            f"{BASE_URL}{PROFILE_PATH}",
-            params=params,
-            headers=headers,
-            cookies=vc._cookie_dict,
-            impersonate=IMPERSONATE_TARGET,
-            proxies=_proxies(),
-            allow_redirects=False,
-            timeout=30,
-        )
-
-    print(f"HTTP {r.status_code}  ({len(r.text)} bytes)")
-
-    if _session_was_killed(r):
-        sys.exit(
-            "\nSESSION KILLED: LinkedIn returned a cookie-delete redirect — "
-            "the li_at cookie is now invalid. Get a fresh li_at + JSESSIONID "
-            "(secondary account recommended) and wait before retrying."
-        )
-    if r.status_code in (301, 302, 303):
-        sys.exit(f"\nUnexpected redirect to: {r.headers.get('location')!r}")
-    if r.status_code in (429, 999):
-        sys.exit("\nRate-limited / soft-blocked. Back off for a while.")
-    r.raise_for_status()
-
-    raw = r.json()
     with open(OUT, "w") as fh:
         json.dump(raw, fh, indent=2)
 

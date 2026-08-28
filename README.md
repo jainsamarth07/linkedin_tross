@@ -105,7 +105,9 @@ copy the resulting session cookies into environment variables. (Rationale in
 | `LI_AT_COOKIE`          | **Yes**  | LinkedIn session cookie. The app refuses to start a request without it. |
 | `LI_JSESSIONID_COOKIE`  | **Yes** in practice | Supplies the `csrf-token` header. The `dash` profile endpoint 302s / 403s without a matching CSRF token. |
 | `OUTBOUND_PROXY`        | **Yes** when deployed | Full proxy URL (`http://user:pass@host:port`) for the LinkedIn calls. Without it, requests from a cloud/datacenter IP get the session killed within a request or two — see [limitations](#known-limitations). Leave unset for local runs from a home IP. |
-| `IMPERSONATE_TARGET`    | No       | `curl_cffi` browser profile for the TLS/HTTP2 fingerprint. Default `chrome136`. Bump when Chrome moves on (keep the `User-Agent` in `voyager_client.py` in step). |
+| `LI_COOKIE_STRING`      | Recommended | The **full** `cookie:` header from a real browser `voyager` request (DevTools → Network → a `voyager` request → Copy → Copy as cURL → the `-H 'cookie: …'` value). A real session carries ~15 cookies; sending only `li_at` + `JSESSIONID` is a bot signal. When set, `LI_AT_COOKIE` / `LI_JSESSIONID_COOKIE` are ignored for the header. |
+| `IMPERSONATE_TARGET`    | No       | `curl_cffi` browser profile for the TLS/HTTP2 fingerprint. Default `chrome136`. |
+| `LI_CLIENT_VERSION`     | No       | Real `voyager-web` clientVersion for the `x-li-track` header. Defaults to a known-good value. |
 | `PORT`                  | No       | Port to bind (injected by most PaaS hosts; defaults to `8000`). |
 
 `.env` is git-ignored. `.env.example` documents the variables with no values.

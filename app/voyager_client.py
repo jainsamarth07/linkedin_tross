@@ -49,9 +49,11 @@ State of play (verified Aug 2026):
   fix a datacenter IP — pair it with OUTBOUND_PROXY.
 """
 
+import base64
 import logging
 import os
 import re
+import uuid
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
@@ -76,6 +78,19 @@ OUTBOUND_PROXY = os.environ.get("OUTBOUND_PROXY") or None
 # both together when Chrome moves on.
 IMPERSONATE_TARGET = os.environ.get("IMPERSONATE_TARGET", "chrome136")
 
+# Optional: the FULL `cookie:` header copied verbatim from a real logged-in
+# browser request (DevTools -> Network -> a `voyager` request -> Copy ->
+# Copy as cURL -> the `-H 'cookie: ...'` value). A real session carries
+# ~15 cookies (bcookie, bscookie, lidc, liap, li_gc, ...); sending only
+# li_at + JSESSIONID is itself a bot signal. When set, this is used as-is
+# and LI_AT_COOKIE / LI_JSESSIONID_COOKIE are ignored for the Cookie header
+# (JSESSIONID is still parsed out of it for the csrf-token).
+LI_COOKIE_STRING = os.environ.get("LI_COOKIE_STRING") or None
+
+# Real clientVersion from a captured request. LinkedIn can tell a made-up
+# version from a shipped one; override via LI_CLIENT_VERSION when it drifts.
+LI_CLIENT_VERSION = os.environ.get("LI_CLIENT_VERSION", "1.13.46243")
+
 
 def _proxies() -> Optional[Dict[str, str]]:
     if not OUTBOUND_PROXY:
@@ -87,18 +102,36 @@ PROFILE_DECORATION_ID = (
     "com.linkedin.voyager.dash.deco.identity.profile.FullProfileWithEntities-93"
 )
 
-# Mimic a real browser's client hints; Voyager rejects requests that look
-# obviously non-browser (missing these headers, or a generic UA, is one of
-# the more common causes of an unexplained 999/403).
+# Header set mirrored from a real captured `voyager` request. The
+# User-Agent / sec-ch-ua / accept-encoding are left to curl_cffi's
+# `impersonate=` so they stay internally consistent with the TLS profile.
+# A request missing `referer` / `sec-fetch-*` / a real `x-li-track`
+# clientVersion looks non-browser and is a common cause of an unexplained
+# 999 / session kill.
+def _x_li_track() -> str:
+    return (
+        '{"clientVersion":"%s","mpVersion":"%s","osName":"web",'
+        '"timezoneOffset":0,"timezone":"UTC","deviceFormFactor":"DESKTOP",'
+        '"mpName":"voyager-web","displayDensity":2,"displayWidth":2560,'
+        '"displayHeight":1440}' % (LI_CLIENT_VERSION, LI_CLIENT_VERSION)
+    )
+
+
+def _x_li_page_instance() -> str:
+    tid = base64.b64encode(uuid.uuid4().bytes).decode()
+    return f"urn:li:page:d_flagship3_profile_view_base;{tid}"
+
+
 DEFAULT_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/vnd.linkedin.normalized+json+2.1",
+    "accept": "application/vnd.linkedin.normalized+json+2.1",
+    "accept-language": "en-US,en;q=0.9",
     "x-restli-protocol-version": "2.0.0",
     "x-li-lang": "en_US",
-    "x-li-track": '{"clientVersion":"1.13.0","mpVersion":"1.13.0","osName":"web"}',
+    "x-li-track": _x_li_track(),
+    "priority": "u=1, i",
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
 }
 
 
@@ -144,21 +177,41 @@ def _session_was_killed(resp) -> bool:
     return "li_at=delete" in blob or 'li_at="delete' in blob
 
 
+def _jsessionid_from_cookie_string(cookie_string: str) -> str:
+    m = re.search(r'JSESSIONID=("?)([^;"]+)\1', cookie_string)
+    return m.group(2) if m else ""
+
+
 class VoyagerClient:
     def __init__(self):
-        self._cookie_dict = load_session_cookies()
-        csrf_source = self._cookie_dict.get("JSESSIONID", "").strip('"')
         self._headers = dict(DEFAULT_HEADERS)
+
+        if LI_COOKIE_STRING:
+            # Replay a full real browser cookie header verbatim.
+            self._cookie_dict = None
+            self._cookie_header = LI_COOKIE_STRING
+            csrf_source = _jsessionid_from_cookie_string(LI_COOKIE_STRING)
+        else:
+            self._cookie_dict = load_session_cookies()
+            self._cookie_header = None
+            csrf_source = self._cookie_dict.get("JSESSIONID", "").strip('"')
+
         if csrf_source:
             self._headers["csrf-token"] = csrf_source
 
     async def _get(self, path: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         url = f"{BASE_URL}{path}"
+        headers = dict(self._headers)
+        headers["x-li-page-instance"] = _x_li_page_instance()
+        headers["referer"] = "https://www.linkedin.com/feed/"
+        if self._cookie_header:
+            headers["cookie"] = self._cookie_header
+
         async with AsyncSession() as session:
             resp = await session.get(
                 url,
                 params=params,
-                headers=self._headers,
+                headers=headers,
                 cookies=self._cookie_dict,
                 impersonate=IMPERSONATE_TARGET,
                 proxies=_proxies(),
