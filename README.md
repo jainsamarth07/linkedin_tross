@@ -11,6 +11,19 @@ use — authenticated with a session cookie copied from a real browser login.
 GET /api/profile?url=https://www.linkedin.com/in/<slug>/
 ```
 
+## Live demo
+
+Deployed on Render: **<https://linkedin-tross.onrender.com>**
+
+```bash
+curl -s "https://linkedin-tross.onrender.com/api/profile?url=https://www.linkedin.com/in/williamhgates/" | jq
+```
+
+- Interactive docs: <https://linkedin-tross.onrender.com/docs>
+- Health: <https://linkedin-tross.onrender.com/health>
+- First request after ~15 min idle takes ~50 s (free-tier cold start); subsequent ones are fast.
+- If `/api/profile` returns `401`, the LinkedIn session cookie needs a manual refresh — see [limitations](#known-limitations).
+
 ---
 
 ## Contents
