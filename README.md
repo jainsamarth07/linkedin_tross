@@ -78,37 +78,35 @@ This API does **not** log in for you. You log in once in a normal browser and
 copy the resulting session cookies into environment variables. (Rationale in
 [Approach](#approach--design-decisions).)
 
-1. **Use a secondary / throwaway LinkedIn account.** Automated use gets a
-   session flagged quickly — see [limitations](#known-limitations). Don't use
-   your primary account.
+1. **Use a real, aged account** (yours or a long-lived secondary). Brand-new
+   throwaway accounts get challenged fast regardless of anything else — see
+   [limitations](#known-limitations).
 2. Log into <https://www.linkedin.com> in Chrome or Firefox as normal.
-3. Open DevTools (`Cmd+Option+I` / `Ctrl+Shift+I`):
-   - **Chrome:** *Application* tab → *Storage* → *Cookies* → `https://www.linkedin.com`
-   - **Firefox:** *Storage* tab → *Cookies* → `https://www.linkedin.com`
-4. Copy **`li_at`** → `LI_AT_COOKIE` (a ~150–200 char string; does **not**
-   start with `ajax:`).
-5. Copy **`JSESSIONID`** → `LI_JSESSIONID_COOKIE` (looks like
-   `"ajax:1234567890123456789"`, quotes included). Used to build the
-   `csrf-token` header the `dash` endpoint requires. **Grab it in the same
-   sitting as `li_at`** — the two must belong to the same session or CSRF
-   checks fail.
-6. **Do not click "Log out"** afterwards — that server-invalidates the cookie.
+3. Open DevTools → **Network** tab. Reload the page. Right-click any
+   `www.linkedin.com` request → **Copy → Copy as cURL**.
+4. From that cURL, take the **`-b '…'`** (or `-H 'cookie: …'`) value — one long
+   line, ~15 `name=value;` pairs (`li_at`, `JSESSIONID`, `bcookie`, `lidc`,
+   `_px3`, …) — and set it as **`LI_COOKIE_STRING`** in `.env`. That's the
+   whole browser session; the app parses `JSESSIONID` out of it for CSRF.
+5. **Do not click "Log out"** afterwards — that server-invalidates the session.
    Just close the tab.
 
-> `li_at` is `HttpOnly`, so `document.cookie` in the console won't show it —
-> the Application/Storage tab is the only way to read it.
+> Minimal alternative: set only `LI_AT_COOKIE` + `LI_JSESSIONID_COOKIE` (both
+> from the same login; `li_at` is `HttpOnly` so read it from the *Application →
+> Cookies* panel). Thinner and more bot-like — prefer `LI_COOKIE_STRING`.
 
 ### Environment variables
 
 | Variable                | Required | Purpose |
 |-------------------------|----------|---------|
-| `LI_AT_COOKIE`          | **Yes**  | LinkedIn session cookie. The app refuses to start a request without it. |
-| `LI_JSESSIONID_COOKIE`  | **Yes** in practice | Supplies the `csrf-token` header. The `dash` profile endpoint 302s / 403s without a matching CSRF token. |
-| `OUTBOUND_PROXY`        | **Yes** when deployed | Full proxy URL (`http://user:pass@host:port`) for the LinkedIn calls. Without it, requests from a cloud/datacenter IP get the session killed within a request or two — see [limitations](#known-limitations). Leave unset for local runs from a home IP. |
-| `LI_COOKIE_STRING`      | Recommended | The **full** `cookie:` header from a real browser `voyager` request (DevTools → Network → a `voyager` request → Copy → Copy as cURL → the `-H 'cookie: …'` value). A real session carries ~15 cookies; sending only `li_at` + `JSESSIONID` is a bot signal. When set, `LI_AT_COOKIE` / `LI_JSESSIONID_COOKIE` are ignored for the header. |
-| `IMPERSONATE_TARGET`    | No       | `curl_cffi` browser profile for the TLS/HTTP2 fingerprint. Default `chrome136`. |
-| `LI_CLIENT_VERSION`     | No       | Real `voyager-web` clientVersion for the `x-li-track` header. Defaults to a known-good value. |
-| `PORT`                  | No       | Port to bind (injected by most PaaS hosts; defaults to `8000`). |
+| `LI_COOKIE_STRING`      | **Yes** (recommended form) | The **full** `cookie:` header from a real logged-in browser request (DevTools → Network → any `linkedin.com` request → Copy → Copy as cURL → the `-b '…'` / `-H 'cookie: …'` value, one line). ~15 cookies incl. the PerimeterX `_px3`. `JSESSIONID` is parsed out of it for the `csrf-token` header. |
+| `LI_AT_COOKIE`          | Fallback | Used only if `LI_COOKIE_STRING` is unset. Just `li_at` — thinner, more bot-like. |
+| `LI_JSESSIONID_COOKIE`  | Fallback | Paired with `LI_AT_COOKIE`; supplies `csrf-token`. |
+| `OUTBOUND_PROXY`        | **Yes** on a datacenter host | Full proxy URL (`http://user:pass@host:port`). LinkedIn scores datacenter IPs (Render/Fly/…) as high-risk — route through a residential/mobile proxy. Leave unset for local runs from a home IP. |
+| `FETCH_DETAIL_CARDS`    | No | `0` to skip the About/Experience/Education `rsc-action` calls and serve the top card only (fewer requests). Default on. |
+| `IMPERSONATE_TARGET`    | No | `curl_cffi` browser profile for the TLS/HTTP2 fingerprint. Default `chrome136`. |
+| `LI_CLIENT_VERSION`     | No | `x-li-track` clientVersion; auto-read from the page HTML, this is the fallback. |
+| `PORT`                  | No | Port to bind (injected by most PaaS hosts; defaults to `8000`). |
 
 `.env` is git-ignored. `.env.example` documents the variables with no values.
 Never commit real cookies.
@@ -137,9 +135,8 @@ Returns a `LinkedInProfile`. Every field is best-effort: anything the parser
 could not confidently extract comes back as `null` (or an empty list), and
 `warnings` explains what was missing rather than failing the request.
 
-The block below is a **real, verified** response (Bill Gates' public profile,
-trimmed), so it reflects exactly what the current endpoint returns — including
-the fields it does **not** populate:
+The block below is **real output** (Bill Gates' public profile, image URLs
+trimmed), Aug 2026:
 
 ```jsonc
 {
@@ -147,55 +144,37 @@ the fields it does **not** populate:
   "name": "Bill Gates",
   "headline": "Chair, Gates Foundation and Founder, Breakthrough Energy",
   "location": "Seattle, Washington, United States",
+  "current_company": "Gates Foundation",
   "about": "Chair of the Gates Foundation. Founder of Breakthrough Energy. Co-founder of Microsoft. Voracious reader. Avid traveler. Active blogger.",
-  "connections": null,          // not in this endpoint's projection
-  "followers": null,            // not in this endpoint's projection
+  "connections": null,           // shown only for some viewer/degree combos
+  "connection_degree": "3rd",
+  "followers": "40,601,261",
+  "website": null,               // behind a click on the real page
   "images": {
     "profile_photo_url": "https://media.licdn.com/dms/image/v2/.../profile-displayphoto-shrink_800_800/...",
     "background_photo_url": "https://media.licdn.com/dms/image/v2/.../profile-displaybackgroundimage-shrink_350_1400/..."
   },
   "experience": [
-    {
-      "title": "Co-chair",
-      "company": "Gates Foundation",
-      "employment_type": null,
-      "duration": "2000 - Present",
-      "start_date": "2000",
-      "end_date": null,
-      "location": null,
-      "description": null,
-      "company_logo_url": "https://media.licdn.com/dms/image/v2/.../company-logo_400_400/..."
-    },
-    {
-      "title": "Co-founder",
-      "company": "Microsoft",
-      "duration": "1975 - Present",
-      "start_date": "1975",
-      "end_date": null,
-      "company_logo_url": "https://media.licdn.com/dms/image/v2/.../microsoft_logo..."
-    }
+    { "title": "Co-chair",   "company": "Gates Foundation",     "duration": "2000 – Present", "start_date": "2000", "end_date": null, "location": null },
+    { "title": "Founder",     "company": "Breakthrough Energy",  "duration": "2015 – Present", "start_date": "2015", "end_date": null, "location": null },
+    { "title": "Co-founder",  "company": "Microsoft",            "duration": "1975 – Present", "start_date": "1975", "end_date": null, "location": null }
   ],
   "education": [
-    {
-      "school": "Harvard University",
-      "degree": null,
-      "field_of_study": null,
-      "duration": "1973 - 1975",
-      "start_date": "1973",
-      "end_date": "1975",
-      "description": null,
-      "school_logo_url": "https://media.licdn.com/dms/image/v2/.../company-logo_400_400/..."
-    }
+    { "school": "Harvard University", "degree": null, "duration": "1973 – 1975", "start_date": "1973", "end_date": "1975" },
+    { "school": "Lakeside School",    "degree": null, "duration": null,          "start_date": null,   "end_date": null }
   ],
-  "skills": [],                 // see limitations — separate endpoint, not called
-  "certifications": [],         // see limitations
-  "languages": [],              // see limitations
-  "scraped_at": "2026-08-27T12:00:00+00:00",
-  "warnings": [
-    "Skills, certifications and languages are not included by this endpoint's projection and are returned empty (see README limitations)."
-  ]
+  "skills": [],                   // separate rsc-action card, not fetched
+  "certifications": [],
+  "languages": [],
+  "scraped_at": "2026-08-29T00:00:00+00:00",
+  "warnings": []
 }
 ```
+
+`name` / `headline` / `location` / `current_company` / `followers` / `images`
+come from the page HTML and are reliable. `about` / `experience` / `education`
+come from the detail cards — best-effort; on a blocked card they're empty and a
+`warnings` line says so.
 
 #### Errors
 
@@ -204,11 +183,11 @@ All errors share the shape `{ "error": "<message>", "detail": null }`.
 | Status | When | What to do |
 |--------|------|------------|
 | `400`  | The `url` isn't a parseable LinkedIn profile URL. | Fix the URL. |
-| `401`  | Session cookie is expired/invalid/flagged, or Voyager returned 401/403 / a cookie-delete redirect. | Get a fresh `li_at` + `JSESSIONID` from a browser (secondary account). |
+| `401`  | Session cookie expired / flagged, or LinkedIn returned a cookie-delete redirect / authwall. | Refresh `LI_COOKIE_STRING` from a browser. |
 | `404`  | LinkedIn returned no profile for that slug. | Check the slug exists / is public. |
 | `422`  | The `url` query param is missing entirely. | Provide `?url=...`. |
-| `429`  | LinkedIn rate-limited or soft-blocked the request (HTTP `429` or LinkedIn's `999`). | Back off and retry later. No automatic retry. |
-| `500`  | Anything unexpected (e.g. Voyager returned non-JSON). | Check server logs. |
+| `429`  | LinkedIn rate-limited or soft-blocked (`429` / `999`). | Back off and retry later. No automatic retry. |
+| `500`  | Anything unexpected. | Check server logs. |
 
 #### Example
 
@@ -286,61 +265,53 @@ account. Instead: log in **once, manually, in a real browser**, copy `li_at` +
 ([`app/auth.py`](app/auth.py)). The trade-off is a manually-managed secret with
 a finite, and in practice short, lifetime — see limitations.
 
-### The endpoint moved — what this project actually calls
+### What this project actually calls
 
-The classic bundled endpoint
-`/voyager/api/identity/profiles/{publicId}/profileView` that most open-source
-LinkedIn wrappers use **is gone** — it now returns **HTTP 410**. LinkedIn
-rebuilt the web profile page on **Server-Driven UI (React Server Components)**:
-the browser now POSTs to `/flagship-web/rsc-action/actions/component?...` and
-gets back React Flight payloads (serialized component trees), not a clean JSON
-document.
+LinkedIn's web app has moved on twice:
 
-The structured data is still reachable through the newer **"dash" (Data Access
-Layer) endpoint**, which the mobile clients still use:
+1. `/voyager/api/identity/profiles/{id}/profileView` — the endpoint every
+   open-source wrapper uses — now returns **HTTP 410 Gone**.
+2. `/voyager/api/identity/dash/profiles?...&decorationId=FullProfileWithEntities-*`
+   — the newer REST.li endpoint — still returns data, but LinkedIn's bot
+   defense (PerimeterX + monitoring of this now-unused endpoint) **kills the
+   session after ~1 request**, from any IP, on any account. Not usable for an
+   API. (Kept in [`app/voyager_client.py`](app/voyager_client.py) +
+   [`app/parser.py`](app/parser.py) as a documented dead end; probe that found
+   it: [`scripts/probe_endpoints.py`](scripts/probe_endpoints.py).)
 
-```
-GET /voyager/api/identity/dash/profiles
-    ?q=memberIdentity
-    &memberIdentity=<publicIdentifier | profile-id>
-    &decorationId=com.linkedin.voyager.dash.deco.identity.profile.FullProfileWithEntities-93
-```
+The current web profile page is **Server-Driven UI** (LinkedIn's "COMO"
+framework — React Server Components). This project reverse-engineers *that*,
+because those requests are the ones a real browser actually makes, so they
+don't get the instant kill:
 
-`decorationId` is a server-side projection selector — it controls which nested
-entities get inlined into the response. `-93` is the version confirmed working
-in Aug 2026; LinkedIn bumps the number periodically. This was found by probing
-sibling endpoints once the web app stopped revealing them
-([`scripts/probe_endpoints.py`](scripts/probe_endpoints.py)).
+| Step | Request | Yields |
+|---|---|---|
+| 1 | `GET /in/<slug>/` | The server-rendered **top card** — name, headline, location, current company, followers, connection degree, website, profile + background photo, and the `fsd_profile` id. Parsed from the `<title>` and the `window.__como_rehydration__` React-Flight blob in `<script id="rehydrate-data">` ([`app/page_parser.py`](app/page_parser.py)). |
+| 2a | `POST /flagship-web/rsc-action/actions/component?componentId=…profileCardsAboveActivity` | **About** |
+| 2b | `…profileCardsExperienceOnly` | **Experience** |
+| 2c | `…profileCardsBelowActivityPart1WithoutExp` | **Education** |
 
-### How a Voyager response becomes the schema
-
-The `dash` response follows the REST.li **`included`** convention: a flat list
-of typed entities (`$type` under `com.linkedin.voyager.dash.` — `.Profile`,
-`.Position`, `.Education`, `organization.Company`, `organization.School`,
-`common.Geo`), cross-referenced by `entityUrn`. Star-prefixed fields
-(`*company`, `*school`, `*geo`) hold a URN pointing at a sibling entity.
-[`app/parser.py`](app/parser.py) builds a URN→entity map, walks the list by
-`$type`, resolves the refs, and assembles a `LinkedInProfile`. Every read is a
-defensive `.get()` chain: **schema drift degrades one field to `null`, it does
-not crash the request**, and `warnings` records what was missing.
+Step 2 posts the ~3 KB `clientArguments` body LinkedIn's client sends
+(templated with the slug + profile id) and gets back a React-Flight payload —
+newline-separated `<id>:<json>` rows whose `"children":["…text…"]` leaves,
+read in order and split on section landmarks, give the section content
+([`app/flight_parser.py`](app/flight_parser.py)).
 
 ### Request flow
 
 ```
-URL ──▶ extract_public_identifier()      (app/voyager_client.py)
-     ──▶ VoyagerClient.get_profile()     → GET /voyager/api/identity/dash/profiles?q=memberIdentity&…&decorationId=…
-     ──▶ parse_profile()                 (app/parser.py)  — REST.li `included` list → LinkedInProfile
-     ──▶ LinkedInProfile JSON            (app/main.py)
+URL ─▶ extract_public_identifier()                       (voyager_client.py)
+    ─▶ WebClient.fetch_profile_html(slug)  GET /in/<slug>/
+    ─▶ parse_top_card(html, slug)                          (page_parser.py)
+    ─▶ WebClient.fetch_component() ×3      POST rsc-action/actions/component   [best-effort]
+    ─▶ parse_about / parse_experience / parse_education    (flight_parser.py)
+    ─▶ LinkedInProfile JSON                                (main.py)
 ```
 
-### Fallback if the `dash` endpoint is also retired
-
-If `FullProfileWithEntities-*` stops working entirely, the next step — still a
-direct-HTTP, no-browser approach — is to POST to the SDUI endpoints
-(`/flagship-web/rsc-action/actions/component?componentId=…profileCards*`) and
-parse the React Flight payloads they return; the data (name, headline, about,
-experience, education) is present in them as text nodes. It's heavier to parse
-than the `dash` JSON, which is why it's the fallback and not the primary.
+Step 1 is the reliable core (always returns). Step 2 is best-effort: if a card
+call is blocked, that section comes back empty with a `warnings` entry rather
+than failing the request. Set `FETCH_DETAIL_CARDS=0` to skip step 2 entirely
+and serve the top card only.
 
 ---
 
@@ -352,55 +323,49 @@ These are real. An honest list beats a submission that pretends they don't exist
   especially from datacenter IPs.** During development, a burst of ~12
   endpoint-probe requests from a residential IP got the session flagged;
   LinkedIn then responded `302` to a redirect loop with
-  `Set-Cookie: li_at=delete me` (a hard session kill) after only **1–2**
-  further requests, even on a freshly-issued cookie. The **deployed** instance
-  showed the same thing more sharply: from Render's datacenter IP, one profile
-  fetch succeeded and the **very next request killed the session**. The client
-  detects this response and raises `SessionExpiredError` → `401`. There is
+  `Set-Cookie: li_at=delete me` (a hard session kill). The legacy
+  `dash/profiles` endpoint was killed after ~1 request every time — that path
+  is a dead end. The **current SDUI approach this project uses** (page +
+  `rsc-action` cards — the calls a real browser makes) held up across many
+  profiles in testing, from a residential IP, without a kill. The client still
+  detects the kill response and raises `SessionExpiredError` → `401`; there is
   **no auto-relogin**. Practical consequences:
-  - **A cloud deployment needs `OUTBOUND_PROXY` set to a residential/mobile
-    proxy.** Without it, a datacenter-hosted instance is good for roughly one
-    request before the session dies. With a residential proxy + slow pacing,
-    community-reported sustainable rates are ~100–300 profiles/day on an aged
-    account.
-  - This app makes **one** Voyager call per profile by design; keep external
-    request volume low on top of that.
-  - Expect to refresh `LI_AT_COOKIE` / `LI_JSESSIONID_COOKIE` often. A flagged
-    IP/cookie pair stays hot for hours.
-  - No request throttling or backoff is built in — that, plus an account/proxy
-    pool, is what a production version would need. Out of scope here.
-- **`decorationId` version drift.** `FullProfileWithEntities-93` is hard-coded.
-  When LinkedIn bumps it, the endpoint starts returning `302`/`4xx`. Fix: try
-  adjacent versions or re-capture from a live session
-  (`python -m scripts.dump_voyager <url>`), then update `PROFILE_DECORATION_ID`
-  in [`app/voyager_client.py`](app/voyager_client.py).
-- **Skills, certifications and languages are not returned.** The
-  `FullProfileWithEntities-93` projection doesn't inline them; they sit behind
-  separate `dash/profileSkills` / `dash/profileCertifications` /
-  `dash/profileLanguages` calls. Fetching them would mean 3–4 extra requests per
-  profile, which — given the point above — is not worth it. These lists come
-  back `[]` with a warning. Adding them later is straightforward if request
-  budget allows.
-- **`connections` / `followers` are not returned** by this projection either
-  (they need `dash/profiles` with a different decoration, or a `networkinfo`
-  call). Currently always `null`.
-- **Unofficial, undocumented API.** LinkedIn can change paths, `decorationId`s,
-  entity `$type`s or field names at any time without notice. The parser is
-  defensive so drift degrades individual fields; a whole empty section means
-  re-capture and diff.
-- **Verified against real responses, on a narrow sample.** The endpoint and
-  parser were confirmed end-to-end against live `200` responses (e.g. the Bill
-  Gates profile above is real output). Coverage of unusual profiles (no
-  experience, non-Latin names, deactivated accounts, heavy visibility
-  restrictions) has not been exhaustively tested.
-- **Rate limiting is surfaced, not absorbed.** `429` / `999` become an HTTP
-  `429` to the caller. No automatic backoff/retry.
-- **Public-profile data only.** Fields LinkedIn gates on network distance/degree
-  are not accounted for. You get roughly what *your logged-in session* sees on
-  the profile page.
-- **One endpoint.** Featured posts, recommendations, volunteering, projects,
-  publications and full "Activity" live on other Voyager endpoints and aren't
-  collected.
+  - **From a datacenter IP (Render/Fly/…) set `OUTBOUND_PROXY` to a
+    residential/mobile proxy.** LinkedIn scores datacenter ranges as
+    high-risk regardless of how clean the request looks. On a residential IP,
+    no proxy is needed for light use.
+  - Give it a full browser session: set **`LI_COOKIE_STRING`** (the whole
+    `cookie:` header, ~15 cookies incl. the PerimeterX `_px3`), not just
+    `li_at` + `JSESSIONID`.
+  - Keep volume modest and paced (the app makes 1 + 3 requests per profile).
+    Community-reported sustainable rates on an aged account are
+    ~100–300 profiles/day.
+  - Expect to refresh the cookie periodically. No throttle/backoff or
+    account-pool is built in — that's what a production version would add.
+- **Experience / Education are best-effort.** They're read from the Flight
+  card payloads by taking text leaves in order and splitting on the per-entry
+  date line. This is exact for ordinary roles and for company-grouped / board
+  roles; it can mis-group or drop an entry on unusual layouts (roles with no
+  dates, heavy nesting, media attachments). The **top card is not affected** —
+  name / headline / location / company / followers / photos come from the
+  server-rendered page and are reliable.
+- **Skills, certifications, languages** are separate `rsc-action` cards that
+  aren't fetched (more requests = more risk). Returned `[]` with a warning.
+  Adding them is a matter of one more component call each.
+- **`connections`** is only present for some viewer/degree combinations
+  (`followers` is shown instead for creators). `connection_degree` likewise.
+- **Hashed CSS classes / component ids will churn.** Extraction is anchored on
+  stable landmarks (`<title>`, `firstName`/`lastName` JSON, the `"… followers"`
+  / `"Contact info"` leaves, `licdn` URLs, the `"About"`/`"Experience"`/
+  `"Education"` section labels), never class names. Component ids
+  (`profileCardsExperienceOnly`, …) and the `clientArguments` body shape can
+  still change — re-capture from a live session if a card returns nothing.
+- **Verified on a modest sample** of real profiles (Gates, Nadella, Weiner,
+  Pichai, others), Aug 2026. Deactivated / heavily-restricted / RTL-name
+  profiles not exhaustively covered.
+- **Rate limiting is surfaced, not absorbed.** `429` / `999` → HTTP `429`.
+- **Public-profile data only** — what your logged-in session can see.
+- **No posts / recommendations / volunteering / projects / publications.**
 
 ---
 
@@ -409,21 +374,29 @@ These are real. An honest list beats a submission that pretends they don't exist
 ```
 app/
   main.py            FastAPI app: routes, exception -> HTTP status mapping
-  scraper.py         orchestrates client + parser (scrape_profile)
-  voyager_client.py  httpx client for the dash/profiles endpoint; URL parsing;
-                     typed errors incl. the session-kill redirect
-  parser.py          REST.li `included` list (dash schema) -> LinkedInProfile
+  scraper.py         orchestrates: page -> top card -> 3 detail cards -> merge
+  web_client.py      curl_cffi client: GET /in/<slug>/ ; POST rsc-action cards
+  page_parser.py     profile-page HTML -> top card (title + __como_rehydration__)
+  flight_parser.py   React-Flight payload -> ordered text leaves -> about /
+                     experience / education
   models.py          Pydantic response schema
-  auth.py            loads li_at / JSESSIONID cookies from env
+  auth.py            loads cookies (LI_COOKIE_STRING or li_at + JSESSIONID)
+  templates/
+    rsc_component_body.json.tpl   captured rsc-action body, {VANITY}/{PROFILE_ID}
+  voyager_client.py  DEAD-END dash/profiles client (kept + documented); also
+                     the shared curl_cffi/cookie/impersonation helpers
+  parser.py          dash-schema REST.li parser (paired with voyager_client)
 scripts/
-  dump_voyager.py    one careful request -> dump a real response + $type summary
-  probe_endpoints.py the endpoint-discovery probe (how the dash endpoint was found)
+  dump_voyager.py    one careful request against the dash endpoint
+  probe_endpoints.py the sweep that found the (now dead-end) dash endpoint
 tests/
-  fixtures.py        synthetic dash-shaped `included` response
-  test_parser.py     parser vs. that fixture (URN resolution, dateRange, Geo)
-  test_api.py        endpoint wiring + exception -> status-code mapping
+  test_page_parser.py    top-card parse vs. tests/captures/mini_profile.html
+  test_flight_parser.py   about/experience/education vs. real *.flight captures
+  test_parser.py          dash-schema parser vs. synthetic fixture
+  test_api.py             endpoint wiring + exception -> status-code mapping
+  captures/               real Flight card payloads + a mini HTML fixture
 Dockerfile
-render.yaml          Render blueprint
+render.yaml          Render blueprint      fly.toml   Fly.io (never-sleep) config
 .env.example
 ```
 
@@ -436,14 +409,12 @@ pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-16 tests, no network access required (the API tests monkeypatch the scraper).
+30 tests, no network required (parsers run against committed captures; the API
+tests monkeypatch the scraper).
 
-To capture / re-verify a live response after a cookie refresh:
-
-```bash
-python -m scripts.dump_voyager "https://www.linkedin.com/in/<slug>/"
-# writes dash_profile_raw.json (gitignored) + prints the $type breakdown
-```
+To re-capture live card payloads after a cookie refresh, load a profile in a
+logged-in browser with DevTools → Network open, and copy the
+`rsc-action/actions/component` responses / the `/in/<slug>/` document.
 
 `scripts/probe_endpoints.py` fires a spaced-out sweep of candidate endpoints —
 useful only when the primary endpoint breaks and you need to find its

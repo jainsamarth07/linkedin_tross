@@ -53,9 +53,12 @@ class LinkedInProfile(BaseModel):
     name: Optional[str] = None
     headline: Optional[str] = None
     location: Optional[str] = None
+    current_company: Optional[str] = None
     about: Optional[str] = None
     connections: Optional[str] = None
+    connection_degree: Optional[str] = None
     followers: Optional[str] = None
+    website: Optional[str] = None
     images: ProfileImages = Field(default_factory=ProfileImages)
     experience: List[Experience] = Field(default_factory=list)
     education: List[Education] = Field(default_factory=list)

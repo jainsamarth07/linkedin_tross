@@ -33,58 +33,59 @@ optionally `JSESSIONID` for the CSRF token) into env vars, and reuse that
 session for all API calls. This is documented explicitly in `app/auth.py`
 and needs to go in the README's "approach" section too.
 
-## Endpoint reality check (done 2026-08-27, live-verified)
-The original plan targeted
-`/voyager/api/identity/profiles/{publicId}/profileView`. **That endpoint is
-dead — HTTP 410.** LinkedIn rebuilt the web profile page on Server-Driven
-UI (React Server Components); the browser now POSTs to
-`/flagship-web/rsc-action/actions/component?...` and gets React Flight
-payloads, not JSON.
+## Endpoint history (2026-08-27 → 08-29, all live-verified)
+1. `/voyager/api/identity/profiles/{id}/profileView` — **HTTP 410, gone.**
+2. `/voyager/api/identity/dash/profiles?...&decorationId=FullProfileWithEntities-93`
+   — returns data, but LinkedIn (PerimeterX `_px3` + monitoring of this
+   now-unused endpoint) **kills the session after ~1 request**, every time,
+   any IP/account. **Dead end.** Kept in `voyager_client.py` + `parser.py`
+   as documented; `scripts/probe_endpoints.py` is how it was found.
+3. **SDUI / "COMO" (current web app) — what the project uses now.** The
+   profile page is React Server Components. We hit the same requests a real
+   browser makes, so no instant kill:
+   - `GET /in/<slug>/` → server-rendered **top card** in the HTML
+     (`<title>` + `window.__como_rehydration__` Flight blob):
+     name, headline, location, current_company, followers,
+     connection_degree, website, photos, `fsd_profile` id.
+   - `POST /flagship-web/rsc-action/actions/component?componentId=…`
+     ×3 → about / experience / education, as React-Flight payloads.
+     Body = captured `clientArguments` (~3KB) templated with slug + id.
+   Verified live across many profiles (Gates, Nadella, Weiner, Pichai, …)
+   from a residential IP — session survived.
 
-Structured data is still available via the newer **`dash` endpoint** (still
-used by LinkedIn's mobile clients), which is what this project now calls:
-```
-GET /voyager/api/identity/dash/profiles
-    ?q=memberIdentity&memberIdentity=<slug|profile-id>
-    &decorationId=com.linkedin.voyager.dash.deco.identity.profile.FullProfileWithEntities-93
-```
-`decorationId` selects a server-side projection; `-93` is the working
-version as of Aug 2026 (LinkedIn bumps it). Discovered via
-`scripts/probe_endpoints.py`. Verified with live `200` responses; parser
-output confirmed correct against the real Bill Gates profile response.
-
-## Architecture (built + live-verified, in app/)
-- `models.py` — Pydantic response schema (unchanged).
-- `auth.py` — loads `LI_AT_COOKIE` / `LI_JSESSIONID_COOKIE` from env.
-  `JSESSIONID` is effectively required now (dash endpoint 302s/403s without
-  a matching csrf-token).
-- `voyager_client.py` — httpx client. `get_profile()` calls the `dash`
-  endpoint above with `PROFILE_DECORATION_ID` (module constant — update
-  when the version drifts). Distinct exceptions for: session-kill redirect
-  (302 + `Set-Cookie: li_at=delete`), authwall redirect, 401/403, 404,
-  429/999.
-- `parser.py` — `parse_profile()` (alias `parse_profile_view` kept). The
-  dash response is a REST.li `included` list of typed entities under
-  `com.linkedin.voyager.dash.` (`identity.profile.Profile`, `.Position`,
-  `.Education`, `organization.Company`, `organization.School`,
-  `common.Geo`). Star-prefixed fields (`*company`, `*school`, `*geo`) are
-  URN refs into the same list — `_Resolver` maps `entityUrn`→entity and
-  resolves them. Dates are `dateRange.{start,end}` (`Date` objects), not
-  `timePeriod`. Location comes from a `Geo` entity lookup. Still fully
-  defensive `.get()` chains.
-- `scraper.py` — orchestrates client + parser (`scrape_profile(url)`,
-  calls `get_profile` + `parse_profile`).
-- `main.py` — unchanged. `GET /api/profile?url=...`, exceptions →
-  400/401/404/429/500, `GET /health`.
+## Architecture (app/)
+- `web_client.py` — curl_cffi client. `fetch_profile_html(slug)` (GET page),
+  `fetch_component(component, slug, pid)` (POST rsc-action). Reuses the
+  cookie / impersonation / proxy / session-kill-detection helpers from
+  `voyager_client.py`.
+- `page_parser.py` — `parse_top_card(html, slug)`. Landmark-anchored
+  (`<title>`, `firstName`/`lastName` JSON near the slug, `"N followers"` /
+  `"Contact info"` leaves, `licdn` URLs) — never hashed CSS classes.
+  `extract_profile_id(html)` pulls `vieweeProfileId`.
+- `flight_parser.py` — `text_leaves()` pulls ordered `"children":["…"]`
+  strings from a Flight payload (JS-escaped rehydration OR raw rsc
+  response). `parse_about/experience/education` split those on section
+  labels; experience flushes an entry per date line (best-effort on
+  dateless / deeply-nested layouts).
+- `scraper.py` — `scrape_profile(url)`: page → top card → 3 cards
+  (best-effort; card failure → warning, not request failure). Env
+  `FETCH_DETAIL_CARDS=0` skips the cards.
+- `auth.py` — `LI_COOKIE_STRING` (full ~15-cookie header, preferred) or
+  `LI_AT_COOKIE` + `LI_JSESSIONID_COOKIE`. `app/__init__.py` loads `.env`.
+- `voyager_client.py` / `parser.py` — the dead-end dash path, kept +
+  documented. Also home of the shared curl_cffi helpers.
+- `models.py` — added `current_company`, `connection_degree`, `website`.
+- `main.py` — unchanged (`GET /api/profile`, `GET /health`).
 
 ## Verified
-- Live `200` from the dash endpoint with `LI_AT` + `LI_JSESSIONID` set.
-- `parse_profile()` run against the real captured response
-  (`dash_profile_raw.json`, gitignored): name, headline, location (via Geo
-  resolution), about, both images, 3 experiences w/ company logos + date
-  ranges, 2 educations w/ school logos + date ranges — all correct.
-- 16 tests pass (`tests/fixtures.py` is a synthetic dash-shaped response).
-- FastAPI app wires up (`/health`, `/api/profile`, `/docs`).
+- Live: `GET /in/<slug>/` + 3 rsc-action cards, run through the FastAPI
+  route, for williamhgates / satyanadella / sundarpichai / jeffweiner08 /
+  agrawal-parag — session held across all of them from a residential IP,
+  no proxy. Full profiles returned (top card always clean; experience
+  best-effort — ordinary + board/grouped roles parse right, very unusual
+  layouts can mis-group).
+- 30 tests pass, offline (parsers vs real `tests/captures/*.flight` +
+  a mini HTML fixture; api tests monkeypatch the scraper).
 
 ## NOT yet done — pick up here
 1. **Dockerfile** — DONE (`Dockerfile` + `.dockerignore`, platform-agnostic,
