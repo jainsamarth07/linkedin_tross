@@ -1,0 +1,30 @@
+# Fly.io config. Deploy: `fly launch` (first time, creates the app) then
+# `fly deploy`. Set secrets with `fly secrets set` — never put cookies here.
+#
+# `app` must be globally unique; `fly launch` will offer a name and rewrite
+# this line if "linkedin-profile-api" is taken.
+app = "linkedin-profile-api"
+primary_region = "iad"
+
+[build]
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # Never sleep: keep one machine up, don't auto-stop on idle.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.checks]
+    [http_service.checks.health]
+      method = "GET"
+      path = "/health"
+      interval = "30s"
+      timeout = "5s"
+      grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
