@@ -1,8 +1,10 @@
 """
-Thin HTTP client for LinkedIn's internal "Voyager" API — the same
-undocumented REST.li backend linkedin.com and the LinkedIn mobile apps call.
+HTTP client for LinkedIn's internal "Voyager" API — the same undocumented
+REST.li backend linkedin.com and the LinkedIn mobile apps call.
 Reverse-engineered by capturing traffic from a logged-in session
 (DevTools -> Network -> filter `voyager`) and probing sibling endpoints.
+Built on `curl_cffi` (not httpx/requests) so the TLS + HTTP2 fingerprint
+impersonates real Chrome — see the fingerprint note below.
 
 State of play (verified Aug 2026):
 
@@ -39,15 +41,21 @@ State of play (verified Aug 2026):
   redirect loop *and* sends `set-cookie: li_at=delete me` to kill the
   session. `_get` detects that and raises SessionExpiredError. Keep request
   volume low.
+
+- TLS/HTTP2 fingerprint matters. A plain Python HTTP client (httpx/requests)
+  has a JA3/JA4 + HTTP2-SETTINGS fingerprint that doesn't match any browser,
+  which is itself a bot signal regardless of headers. We use `curl_cffi`
+  with `impersonate=` so the handshake matches real Chrome. This does NOT
+  fix a datacenter IP — pair it with OUTBOUND_PROXY.
 """
 
 import logging
 import os
 import re
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
-import httpx
+from curl_cffi.requests import AsyncSession
 
 from .auth import load_session_cookies
 
@@ -63,6 +71,17 @@ BASE_URL = "https://www.linkedin.com"
 # Left unset, requests go direct (fine for local runs from a home IP).
 OUTBOUND_PROXY = os.environ.get("OUTBOUND_PROXY") or None
 
+# Browser to impersonate at the TLS/HTTP2 layer (curl_cffi target name).
+# Keep it consistent with the User-Agent string in DEFAULT_HEADERS. Bump
+# both together when Chrome moves on.
+IMPERSONATE_TARGET = os.environ.get("IMPERSONATE_TARGET", "chrome136")
+
+
+def _proxies() -> Optional[Dict[str, str]]:
+    if not OUTBOUND_PROXY:
+        return None
+    return {"http": OUTBOUND_PROXY, "https": OUTBOUND_PROXY}
+
 PROFILE_PATH = "/voyager/api/identity/dash/profiles"
 PROFILE_DECORATION_ID = (
     "com.linkedin.voyager.dash.deco.identity.profile.FullProfileWithEntities-93"
@@ -74,7 +93,7 @@ PROFILE_DECORATION_ID = (
 DEFAULT_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
     ),
     "Accept": "application/vnd.linkedin.normalized+json+2.1",
     "x-restli-protocol-version": "2.0.0",
@@ -110,13 +129,19 @@ def extract_public_identifier(profile_url: str) -> str:
     return match.group(1)
 
 
-def _session_was_killed(resp: httpx.Response) -> bool:
+def _session_was_killed(resp) -> bool:
     """
     LinkedIn's block response: 3xx to a redirect loop plus a Set-Cookie that
     expires li_at ("delete me"). Treat that as a dead session, not a redirect.
     """
-    set_cookie = resp.headers.get("set-cookie", "")
-    return "li_at=delete" in set_cookie or 'li_at="delete' in set_cookie
+    headers = resp.headers
+    try:
+        set_cookies = headers.get_list("set-cookie")
+    except AttributeError:  # pragma: no cover - depends on header impl
+        one = headers.get("set-cookie", "")
+        set_cookies = [one] if one else []
+    blob = " ".join(set_cookies)
+    return "li_at=delete" in blob or 'li_at="delete' in blob
 
 
 class VoyagerClient:
@@ -129,11 +154,17 @@ class VoyagerClient:
 
     async def _get(self, path: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         url = f"{BASE_URL}{path}"
-        async with httpx.AsyncClient(
-            cookies=self._cookie_dict, headers=self._headers, timeout=30.0,
-            follow_redirects=False, proxy=OUTBOUND_PROXY,
-        ) as client:
-            resp = await client.get(url, params=params)
+        async with AsyncSession() as session:
+            resp = await session.get(
+                url,
+                params=params,
+                headers=self._headers,
+                cookies=self._cookie_dict,
+                impersonate=IMPERSONATE_TARGET,
+                proxies=_proxies(),
+                allow_redirects=False,
+                timeout=30,
+            )
 
         if _session_was_killed(resp):
             raise SessionExpiredError(

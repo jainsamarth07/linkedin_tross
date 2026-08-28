@@ -25,7 +25,7 @@ import os
 import sys
 from collections import Counter
 
-import httpx
+from curl_cffi.requests import AsyncSession
 
 try:
     from dotenv import load_dotenv
@@ -36,10 +36,12 @@ except ImportError:
 
 from app.voyager_client import (
     BASE_URL,
-    OUTBOUND_PROXY,
+    IMPERSONATE_TARGET,
     PROFILE_DECORATION_ID,
     PROFILE_PATH,
     VoyagerClient,
+    _proxies,
+    _session_was_killed,
     extract_public_identifier,
 )
 
@@ -60,16 +62,21 @@ async def main(url: str) -> None:
         "decorationId": PROFILE_DECORATION_ID,
     }
 
-    async with httpx.AsyncClient(
-        cookies=vc._cookie_dict, headers=headers, timeout=30.0,
-        follow_redirects=False, proxy=OUTBOUND_PROXY,
-    ) as client:
-        r = await client.get(f"{BASE_URL}{PROFILE_PATH}", params=params)
+    async with AsyncSession() as session:
+        r = await session.get(
+            f"{BASE_URL}{PROFILE_PATH}",
+            params=params,
+            headers=headers,
+            cookies=vc._cookie_dict,
+            impersonate=IMPERSONATE_TARGET,
+            proxies=_proxies(),
+            allow_redirects=False,
+            timeout=30,
+        )
 
     print(f"HTTP {r.status_code}  ({len(r.text)} bytes)")
 
-    set_cookie = r.headers.get("set-cookie", "")
-    if "li_at=delete" in set_cookie or 'li_at="delete' in set_cookie:
+    if _session_was_killed(r):
         sys.exit(
             "\nSESSION KILLED: LinkedIn returned a cookie-delete redirect — "
             "the li_at cookie is now invalid. Get a fresh li_at + JSESSIONID "

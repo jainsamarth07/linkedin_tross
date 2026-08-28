@@ -105,6 +105,7 @@ copy the resulting session cookies into environment variables. (Rationale in
 | `LI_AT_COOKIE`          | **Yes**  | LinkedIn session cookie. The app refuses to start a request without it. |
 | `LI_JSESSIONID_COOKIE`  | **Yes** in practice | Supplies the `csrf-token` header. The `dash` profile endpoint 302s / 403s without a matching CSRF token. |
 | `OUTBOUND_PROXY`        | **Yes** when deployed | Full proxy URL (`http://user:pass@host:port`) for the LinkedIn calls. Without it, requests from a cloud/datacenter IP get the session killed within a request or two — see [limitations](#known-limitations). Leave unset for local runs from a home IP. |
+| `IMPERSONATE_TARGET`    | No       | `curl_cffi` browser profile for the TLS/HTTP2 fingerprint. Default `chrome136`. Bump when Chrome moves on (keep the `User-Agent` in `voyager_client.py` in step). |
 | `PORT`                  | No       | Port to bind (injected by most PaaS hosts; defaults to `8000`). |
 
 `.env` is git-ignored. `.env.example` documents the variables with no values.
@@ -255,13 +256,23 @@ DOM/render-based and points straight at LinkedIn's internal HTTP API.
 
 | Option | Verdict |
 |--------|---------|
-| **LinkedIn's internal Voyager API** (`/voyager/api/...`), called directly with `httpx` | **Chosen.** Direct HTTP to LinkedIn's own endpoints, no browser. Authenticated with a session cookie, returns structured REST.li JSON — no HTML parsing. |
+| **LinkedIn's internal Voyager API** (`/voyager/api/...`), called directly over HTTP | **Chosen.** Direct HTTP to LinkedIn's own endpoints, no browser. Authenticated with a session cookie, returns structured REST.li JSON — no HTML parsing. |
 | Headless browser + DOM scraping (Playwright/Selenium) | **Excluded by the brief** (no browser). Also heavier, slower, and brittle to markup changes. No browser-automation dependency exists in this repo. |
 | Third-party scraper APIs (Proxycurl, PhantomBuster, …) | Rejected: doesn't satisfy "build a hosted API" / "reverse engineer". |
 | Official LinkedIn OAuth API | Rejected: only exposes the *authenticated user's own* data, not arbitrary third-party profiles. |
 
 The only browser involvement anywhere is a **one-time manual login** to copy
 the session cookie (below) — a human logging in once, not automation.
+
+### TLS / HTTP2 fingerprint
+
+A plain Python HTTP client (`httpx`, `requests`) has a TLS **JA3/JA4** and
+HTTP/2 **SETTINGS** fingerprint that matches no real browser — an independent
+bot signal on top of headers and IP. The Voyager calls therefore go through
+[`curl_cffi`](https://github.com/lexiforest/curl_cffi) with
+`impersonate="chrome136"` (override via `IMPERSONATE_TARGET`), so the
+handshake matches Chrome. `httpx` is still used elsewhere (the test client).
+This does **not** substitute for a good IP — pair it with `OUTBOUND_PROXY`.
 
 ### Why a copied cookie instead of automated login
 
