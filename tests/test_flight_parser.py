@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from app.flight_parser import (
+    is_self_view,
     parse_about,
     parse_education,
     parse_experience,
@@ -72,6 +73,59 @@ def test_parse_education():
     assert "Lakeside School" in schools
     harvard = next(e for e in edu if e["school"] == "Harvard University")
     assert split_date_range(harvard["duration"]) == ("1973", "1975")
+
+
+def test_self_view_detected_and_produces_no_garbage_education():
+    # self-view Education card: the section header is immediately followed by
+    # the "Connected apps" management widget and analytics chrome
+    sv = (
+        '0:["$","div",null,{"children":['
+        '["$","p",null,{"children":["Education"]}],'
+        '["$","p",null,{"children":["Connected apps"]}],'
+        '["$","p",null,{"children":["Add the products you use to stand out."]}],'
+        '["$","p",null,{"children":["156 profile views"]}],'
+        '["$","p",null,{"children":["34 post impressions"]}],'
+        '["$","p",null,{"children":["Credential ID ABC123"]}]'
+        ']}]'
+    )
+    assert is_self_view(sv) is True
+    # nothing trustworthy to extract -> empty, not garbage
+    assert parse_education(sv) == []
+
+
+def test_junk_and_standalone_cert_rows_filtered_from_education():
+    fl = (
+        '0:["$","div",null,{"children":['
+        '["$","p",null,{"children":["Education"]}],'
+        '["$","p",null,{"children":["Add credential"]}],'
+        '["$","p",null,{"children":["MIT"]}],'
+        '["$","p",null,{"children":["2010 – 2014"]}],'
+        '["$","p",null,{"children":["AWS Certified Solutions Architect"]}]'
+        ']}]'
+    )
+    edu = parse_education(fl)
+    schools = [e["school"] for e in edu]
+    assert schools == ["MIT"]  # junk prefix + trailing dateless cert dropped
+    assert edu[0]["duration"] == "2010 – 2014"
+
+
+def test_not_self_view_for_third_party_capture():
+    assert is_self_view(_load("card_experience.flight")) is False
+
+
+def test_employment_suffix_stripped():
+    fl = (
+        '0:["$","div",null,{"children":['
+        '["$","p",null,{"children":["Experience"]}],'
+        '["$","p",null,{"children":["Engineer"]}],'
+        '["$","p",null,{"children":["Acme Corp · Full-time"]}],'
+        '["$","p",null,{"children":["Jan 2020 - Present · 6 yrs"]}],'
+        '["$","p",null,{"children":["Berlin Area · Hybrid"]}]'
+        ']}]'
+    )
+    e = parse_experience(fl)[0]
+    assert e["company"] == "Acme Corp"
+    assert e["location"] == "Berlin Area"
 
 
 @pytest.mark.parametrize(

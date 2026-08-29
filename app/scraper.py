@@ -17,6 +17,7 @@ import logging
 from datetime import datetime, timezone
 
 from .flight_parser import (
+    is_self_view,
     parse_about,
     parse_education,
     parse_experience,
@@ -58,6 +59,7 @@ async def scrape_profile(profile_url: str) -> LinkedInProfile:
     about = None
     experience: list[Experience] = []
     education: list[Education] = []
+    flights: list[str] = []
 
     profile_id = card.get("profile_id")
     if FETCH_DETAIL_CARDS and profile_id:
@@ -78,6 +80,7 @@ async def scrape_profile(profile_url: str) -> LinkedInProfile:
                 warnings.append(f"Detail section '{fn}' failed to parse: {e}")
                 continue
 
+            flights.append(flight)
             if fn == "about":
                 about = parse_about(flight)
             elif fn == "experience":
@@ -99,6 +102,13 @@ async def scrape_profile(profile_url: str) -> LinkedInProfile:
                             duration=x["duration"], start_date=s, end_date=en,
                         )
                     )
+        if is_self_view(*flights):
+            warnings.append(
+                "This is the logged-in user's OWN profile — LinkedIn serves an "
+                "edit/analytics layout, so about/experience/education are "
+                "partial and may be imperfect. Scrape it with a different "
+                "account's cookie for clean data."
+            )
     elif not FETCH_DETAIL_CARDS:
         warnings.append("Detail sections disabled (FETCH_DETAIL_CARDS=0).")
     elif not profile_id:

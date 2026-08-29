@@ -349,6 +349,12 @@ These are real. An honest list beats a submission that pretends they don't exist
   dates, heavy nesting, media attachments). The **top card is not affected** —
   name / headline / location / company / followers / photos come from the
   server-rendered page and are reliable.
+- **Don't scrape your own profile with your own cookie.** LinkedIn serves a
+  *self-view* (edit + analytics) layout for the logged-in user's own profile —
+  the detail cards fill with "Add role", "Connected apps", "156 profile views"
+  etc. The scraper detects this, strips what it can, and adds a `warnings`
+  note; experience is usually still OK, About/Education come back thin. Use a
+  **different account's cookie** to get a clean read of your own profile.
 - **Skills, certifications, languages** are separate `rsc-action` cards that
   aren't fetched (more requests = more risk). Returned `[]` with a warning.
   Adding them is a matter of one more component call each.

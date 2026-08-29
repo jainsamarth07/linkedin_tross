@@ -67,7 +67,10 @@ def text_leaves(blob: str) -> List[str]:
 
 
 def section_after(leaves: List[str], label: str, stop_labels) -> List[str]:
-    """Text leaves that fall between `label` and the next known section label."""
+    """
+    Text leaves between `label` and the next section label, with UI-chrome /
+    self-view / promo leaves removed.
+    """
     try:
         start = leaves.index(label) + 1
     except ValueError:
@@ -76,7 +79,7 @@ def section_after(leaves: List[str], label: str, stop_labels) -> List[str]:
     end = start
     while end < len(leaves) and leaves[end] not in stop:
         end += 1
-    return leaves[start:end]
+    return [x for x in leaves[start:end] if not _is_junk(x)]
 
 
 # --- section parsers -------------------------------------------------------
@@ -89,9 +92,59 @@ _LOCATIONISH = _re.compile(
     r"\b(Area|Region|Remote|Hybrid|On-site|Metropolitan)\b|^Greater\s|"
     r"United States|United Kingdom|,\s*[A-Z][a-z]+$",
 )
-_SECTION_LABELS = ("About", "Featured", "Activity", "Experience", "Education",
-                   "Licenses & certifications", "Skills", "Languages",
-                   "Volunteering", "Post", "Show all")
+
+# Section headers we split on. Includes the ones that render right after
+# Education / Experience in the combined "BelowActivity" card, plus the
+# self-view management widgets.
+_SECTION_LABELS = (
+    "About", "Featured", "Activity", "Experience", "Education", "Skills",
+    "Licenses & certifications", "Licenses &amp; certifications",
+    "Certifications", "Courses", "Projects", "Publications", "Patents",
+    "Honors & awards", "Honors &amp; awards", "Test scores", "Languages",
+    "Organizations", "Volunteering", "Volunteer experience", "Causes",
+    "Recommendations", "Interests", "Connected apps", "Analytics",
+    "Suggested for you", "Private to you", "Post", "Show all",
+)
+
+# Leaves that are UI chrome / self-view controls / promos — never data.
+_JUNK_LEAF = _re.compile(
+    r"^(Add |Show all\b|Show \d|See all\b|Connected apps$|"
+    r"Credential ID\b|Issued\b|Skill:|Endorse\b|"
+    r"\d[\d,]* (profile views?|post impressions?|search appearances?|"
+    r"followers?|connections?|reactions?|comments?)$|"
+    r"(Discover|Check out|See how often|Show recruiters) |"
+    r"Past \d+ days$|Private to you$|Suggested for you$)",
+    _re.I,
+)
+
+# " · Full-time", " · Hybrid", " · Remote" etc. tacked onto company/location.
+_EMPLOYMENT_SUFFIX = _re.compile(
+    r"\s*·\s*(Full-time|Part-time|Self-employed|Freelance|Contract|Internship|"
+    r"Apprenticeship|Seasonal|Permanent|Temporary|Hybrid|Remote|On-site)\s*$",
+    _re.I,
+)
+
+
+def _is_junk(s: str) -> bool:
+    return bool(_JUNK_LEAF.match(s))
+
+
+def is_self_view(*flights: str) -> bool:
+    """
+    True if these card payloads are the logged-in user's *own* profile —
+    LinkedIn then renders an edit/analytics layout (Add role, Connected apps,
+    'N profile views', cert-management rows) that parses poorly. Callers
+    should flag this rather than trust the detail sections.
+    """
+    blob = " ".join(flights)
+    markers = ("Add career break", '"Add role"', "Connected apps",
+               "profile views", "post impressions", "search appearances",
+               "Private to you")
+    return sum(m in blob for m in markers) >= 2
+
+
+def _strip_suffix(s):
+    return _EMPLOYMENT_SUFFIX.sub("", s).strip() if s else s
 
 
 def _is_duration(s: str) -> bool:
@@ -106,15 +159,15 @@ def parse_about(card_flight: str) -> Optional[str]:
     lv = text_leaves(card_flight)
     if not lv:
         return None
-    # first substantial paragraph after "About" (skip the "Featured" label)
+    # first substantial paragraph after "About" (skip section labels / chrome)
     try:
         i = lv.index("About") + 1
     except ValueError:
-        i = 0
-    for t in lv[i:i + 4]:
-        if t in _SECTION_LABELS:
+        return None
+    for t in lv[i:i + 5]:
+        if t in _SECTION_LABELS or _is_junk(t):
             continue
-        if len(t) >= 20:
+        if len(t) >= 25:
             return t
     return None
 
@@ -134,10 +187,10 @@ def parse_experience(card_flight: str) -> List[dict]:
     for k, leaf in enumerate(lv):
         if _is_duration(leaf):
             title = buf[-2] if len(buf) >= 2 else (buf[-1] if buf else None)
-            company = buf[-1] if len(buf) >= 2 else None
+            company = _strip_suffix(buf[-1]) if len(buf) >= 2 else None
             location = None
             if k + 1 < len(lv) and _is_locationish(lv[k + 1]):
-                location = lv[k + 1]
+                location = _strip_suffix(lv[k + 1])
             if title:
                 out.append({
                     "title": title, "company": company,
@@ -149,9 +202,12 @@ def parse_experience(card_flight: str) -> List[dict]:
         else:
             buf.append(leaf)
     if len(buf) >= 2:  # trailing dateless entry, best effort
-        out.append({"title": buf[-2], "company": buf[-1],
+        out.append({"title": buf[-2], "company": _strip_suffix(buf[-1]),
                     "duration": None, "location": None})
-    return out
+    return out[:40]
+
+
+_CERTISH = _re.compile(r"\b(Certified|Certificate|Credential|License|Bootcamp)\b", _re.I)
 
 
 def parse_education(card_flight: str) -> List[dict]:
@@ -162,7 +218,6 @@ def parse_education(card_flight: str) -> List[dict]:
         school = lv[i]
         i += 1
         duration = degree = None
-        # optional following lines: degree/field, then a date range
         while i < len(lv) and lv[i] not in _SECTION_LABELS:
             if _DATEISH.search(lv[i]):
                 duration = lv[i]
@@ -173,9 +228,11 @@ def parse_education(card_flight: str) -> List[dict]:
                 i += 1
             else:
                 break
-        if school:
+        # drop cert rows that leaked in from a section with no header leaf
+        # (mostly the self-view "combined" card)
+        if school and not (_CERTISH.search(school) and duration is None):
             out.append({"school": school, "degree": degree, "duration": duration})
-    return out
+    return out[:25]
 
 
 def split_date_range(duration: Optional[str]):
