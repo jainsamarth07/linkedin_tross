@@ -21,9 +21,10 @@ from .flight_parser import (
     parse_about,
     parse_education,
     parse_experience,
+    parse_skills,
     split_date_range,
 )
-from .models import Education, Experience, LinkedInProfile, ProfileImages
+from .models import Education, Experience, LinkedInProfile, ProfileImages, Skill
 from .page_parser import parse_top_card
 from .voyager_client import (
     SessionExpiredError,
@@ -34,6 +35,7 @@ from .web_client import (
     CARD_ABOUT,
     CARD_EDU_SKILLS,
     CARD_EXPERIENCE,
+    CARD_SKILLS,
     FETCH_DETAIL_CARDS,
     WebClient,
 )
@@ -59,6 +61,7 @@ async def scrape_profile(profile_url: str) -> LinkedInProfile:
     about = None
     experience: list[Experience] = []
     education: list[Education] = []
+    skills: list[Skill] = []
     flights: list[str] = []
 
     profile_id = card.get("profile_id")
@@ -67,6 +70,7 @@ async def scrape_profile(profile_url: str) -> LinkedInProfile:
             (CARD_ABOUT, "about"),
             (CARD_EXPERIENCE, "experience"),
             (CARD_EDU_SKILLS, "education"),
+            (CARD_SKILLS, "skills"),
         ):
             try:
                 flight = await client.fetch_component(name, slug, profile_id)
@@ -102,6 +106,12 @@ async def scrape_profile(profile_url: str) -> LinkedInProfile:
                             duration=x["duration"], start_date=s, end_date=en,
                         )
                     )
+            elif fn == "skills":
+                for x in parse_skills(flight):
+                    skills.append(
+                        Skill(name=x["name"],
+                              endorsement_count=x["endorsement_count"])
+                    )
         if is_self_view(*flights):
             warnings.append(
                 "This is the logged-in user's OWN profile — LinkedIn serves an "
@@ -131,7 +141,7 @@ async def scrape_profile(profile_url: str) -> LinkedInProfile:
         ),
         experience=experience,
         education=education,
-        skills=[],
+        skills=skills,
         certifications=[],
         languages=[],
         scraped_at=scraped_at,

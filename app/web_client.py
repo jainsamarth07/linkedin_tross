@@ -38,7 +38,8 @@ COMPONENT_PREFIX = "com.linkedin.sdui.generated.profile.dsl.impl."
 # Detail-section components (each returns a small Flight payload).
 CARD_ABOUT = "profileCardsAboveActivity"
 CARD_EXPERIENCE = "profileCardsExperienceOnly"
-CARD_EDU_SKILLS = "profileCardsBelowActivityPart1WithoutExp"
+CARD_EDU_SKILLS = "profileCardsBelowActivityPart1WithoutExp"   # -> Education
+CARD_SKILLS = "profileCardsBelowActivityPart7"                 # -> Skills
 
 _BODY_TPL = (Path(__file__).parent / "templates" / "rsc_component_body.json.tpl").read_text()
 

@@ -8,14 +8,24 @@ from pathlib import Path
 
 import pytest
 
+import json
+
 from app.flight_parser import (
     is_self_view,
     parse_about,
     parse_education,
     parse_experience,
+    parse_skills,
     split_date_range,
     text_leaves,
 )
+
+
+def _flight(leaves):
+    kids = ",".join(
+        f'["$","p",null,{{"children":[{json.dumps(l)}]}}]' for l in leaves
+    )
+    return '0:["$","div",null,{"children":[' + kids + "]}]"
 
 CAP = Path(__file__).parent / "captures"
 
@@ -111,6 +121,45 @@ def test_junk_and_standalone_cert_rows_filtered_from_education():
 
 def test_not_self_view_for_third_party_capture():
     assert is_self_view(_load("card_experience.flight")) is False
+
+
+def test_parse_experience_company_grouped():
+    # 3 roles at one employer, rendered as a group header + bare tenure
+    fl = _flight([
+        "Experience",
+        "JPMorganChase", "3 yrs 7 mos",
+        "Software Engineer II", "Full-time", "Nov 2025 - Present · 10 mos",
+        "Software Engineer", "Full-time", "Jul 2023 - Oct 2025 · 2 yrs 4 mos",
+        "Bengaluru",
+        "Software Engineer", "Internship", "Feb 2023 - Jun 2023 · 5 mos",
+        "Bengaluru, Karnataka, India",
+    ])
+    exp = parse_experience(fl)
+    assert [e["title"] for e in exp] == [
+        "Software Engineer II", "Software Engineer", "Software Engineer"]
+    assert all(e["company"] == "JPMorganChase" for e in exp)
+    assert exp[1]["location"] == "Bengaluru"
+    assert exp[2]["location"] == "Bengaluru, Karnataka, India"
+
+
+def test_parse_skills_with_endorsements():
+    fl = _flight([
+        "Cloud Foundry", "Endorsed by 1 person in the last 6 months", "1 endorsement",
+        "Infrastructure as a Service (IaaS)", "1 endorsement",
+        "Python", "12 endorsements",
+        "Kubernetes",
+    ])
+    sk = parse_skills(fl)
+    assert [(s["name"], s["endorsement_count"]) for s in sk] == [
+        ("Cloud Foundry", 1),
+        ("Infrastructure as a Service (IaaS)", 1),
+        ("Python", 12),
+        ("Kubernetes", None),
+    ]
+
+
+def test_parse_skills_wrong_card_returns_empty():
+    assert parse_skills(_flight(["Interests", "Bill & Melinda Gates Foundation"])) == []
 
 
 def test_employment_suffix_stripped():

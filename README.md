@@ -288,8 +288,9 @@ don't get the instant kill:
 |---|---|---|
 | 1 | `GET /in/<slug>/` | The server-rendered **top card** — name, headline, location, current company, followers, connection degree, website, profile + background photo, and the `fsd_profile` id. Parsed from the `<title>` and the `window.__como_rehydration__` React-Flight blob in `<script id="rehydrate-data">` ([`app/page_parser.py`](app/page_parser.py)). |
 | 2a | `POST /flagship-web/rsc-action/actions/component?componentId=…profileCardsAboveActivity` | **About** |
-| 2b | `…profileCardsExperienceOnly` | **Experience** |
+| 2b | `…profileCardsExperienceOnly` | **Experience** (handles company-grouped roles) |
 | 2c | `…profileCardsBelowActivityPart1WithoutExp` | **Education** |
+| 2d | `…profileCardsBelowActivityPart7` | **Skills** (with endorsement counts) |
 
 Step 2 posts the ~3 KB `clientArguments` body LinkedIn's client sends
 (templated with the slug + profile id) and gets back a React-Flight payload —
@@ -303,8 +304,8 @@ read in order and split on section landmarks, give the section content
 URL ─▶ extract_public_identifier()                       (voyager_client.py)
     ─▶ WebClient.fetch_profile_html(slug)  GET /in/<slug>/
     ─▶ parse_top_card(html, slug)                          (page_parser.py)
-    ─▶ WebClient.fetch_component() ×3      POST rsc-action/actions/component   [best-effort]
-    ─▶ parse_about / parse_experience / parse_education    (flight_parser.py)
+    ─▶ WebClient.fetch_component() ×4      POST rsc-action/actions/component   [best-effort]
+    ─▶ parse_about / _experience / _education / _skills    (flight_parser.py)
     ─▶ LinkedInProfile JSON                                (main.py)
 ```
 
@@ -355,9 +356,10 @@ These are real. An honest list beats a submission that pretends they don't exist
   etc. The scraper detects this, strips what it can, and adds a `warnings`
   note; experience is usually still OK, About/Education come back thin. Use a
   **different account's cookie** to get a clean read of your own profile.
-- **Skills, certifications, languages** are separate `rsc-action` cards that
-  aren't fetched (more requests = more risk). Returned `[]` with a warning.
-  Adding them is a matter of one more component call each.
+- **Certifications and languages** are separate `rsc-action` cards that aren't
+  fetched (their `Part` slot varies by profile, and more calls = more risk).
+  Returned `[]`. Skills **are** fetched (`…Part7`), with a guard that returns
+  `[]` if that slot holds a different section for a given profile.
 - **`connections`** is only present for some viewer/degree combinations
   (`followers` is shown instead for creators). `connection_degree` likewise.
 - **Hashed CSS classes / component ids will churn.** Extraction is anchored on

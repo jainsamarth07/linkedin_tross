@@ -37,6 +37,7 @@ def unescape(blob: str) -> str:
 
 def _clean(s: str) -> str:
     s = s.replace('\\"', '"').replace("\\/", "/").replace("\\n", " ")
+    s = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
@@ -123,6 +124,27 @@ _EMPLOYMENT_SUFFIX = _re.compile(
     r"Apprenticeship|Seasonal|Permanent|Temporary|Hybrid|Remote|On-site)\s*$",
     _re.I,
 )
+_EMPLOYMENT_TYPE = frozenset(
+    x.lower() for x in (
+        "Full-time", "Part-time", "Self-employed", "Freelance", "Contract",
+        "Internship", "Apprenticeship", "Seasonal", "Permanent", "Temporary",
+    )
+)
+# a standalone tenure like "3 yrs 7 mos" / "5 mos" — NO year, NO dash. Marks a
+# company GROUP header (roles that follow inherit its company name).
+_BARE_TENURE = _re.compile(
+    r"^\d+\s*(yr|yrs|year|years|mo|mos|month|months)"
+    r"(\s+\d+\s*(mo|mos|month|months))?$",
+    _re.I,
+)
+
+
+def _is_employment_type(s: str) -> bool:
+    return s.lower() in _EMPLOYMENT_TYPE
+
+
+def _is_bare_tenure(s: str) -> bool:
+    return bool(_BARE_TENURE.match(s))
 
 
 def _is_junk(s: str) -> bool:
@@ -184,25 +206,54 @@ def parse_experience(card_flight: str) -> List[dict]:
     lv = section_after(text_leaves(card_flight), "Experience", _SECTION_LABELS)
     out: List[dict] = []
     buf: List[str] = []
-    for k, leaf in enumerate(lv):
+    group_company: Optional[str] = None  # set while inside a company group
+    k = 0
+    while k < len(lv):
+        leaf = lv[k]
+
+        # company GROUP header: <company> immediately followed by a bare tenure
+        if k + 1 < len(lv) and _is_bare_tenure(lv[k + 1]) and not _is_duration(leaf):
+            group_company = _strip_suffix(leaf)
+            buf = []
+            k += 2
+            continue
+
         if _is_duration(leaf):
-            title = buf[-2] if len(buf) >= 2 else (buf[-1] if buf else None)
-            company = _strip_suffix(buf[-1]) if len(buf) >= 2 else None
+            role_leaves = [b for b in buf if not _is_employment_type(b)]
+            if group_company:
+                # in a group every role is at group_company; a leading extra
+                # leaf is the PREVIOUS role's trailing location
+                title = role_leaves[-1] if role_leaves else None
+                company = group_company
+                if len(role_leaves) >= 2 and out and out[-1].get("location") is None:
+                    out[-1]["location"] = _strip_suffix(role_leaves[0])
+            else:
+                title = role_leaves[-2] if len(role_leaves) >= 2 else (
+                    role_leaves[-1] if role_leaves else None)
+                company = _strip_suffix(role_leaves[-1]) if len(role_leaves) >= 2 else None
             location = None
             if k + 1 < len(lv) and _is_locationish(lv[k + 1]):
                 location = _strip_suffix(lv[k + 1])
             if title:
-                out.append({
-                    "title": title, "company": company,
-                    "duration": leaf, "location": location,
-                })
+                out.append({"title": title, "company": company,
+                            "duration": leaf, "location": location})
             buf = []
-        elif _is_locationish(leaf) and out and lv[k - 1] == out[-1]["duration"]:
-            continue  # already attached as the previous entry's location
-        else:
-            buf.append(leaf)
-    if len(buf) >= 2:  # trailing dateless entry, best effort
-        out.append({"title": buf[-2], "company": _strip_suffix(buf[-1]),
+            k += 1
+            continue
+
+        if _is_locationish(leaf) and out and k > 0 and lv[k - 1] == out[-1]["duration"]:
+            k += 1  # already taken as previous entry's location
+            continue
+
+        buf.append(leaf)
+        k += 1
+
+    role_leaves = [b for b in buf if not _is_employment_type(b)]
+    if group_company and role_leaves:  # trailing dateless role in a group
+        out.append({"title": role_leaves[0], "company": group_company,
+                    "duration": None, "location": None})
+    elif len(role_leaves) >= 2:
+        out.append({"title": role_leaves[-2], "company": _strip_suffix(role_leaves[-1]),
                     "duration": None, "location": None})
     return out[:40]
 
@@ -233,6 +284,38 @@ def parse_education(card_flight: str) -> List[dict]:
         if school and not (_CERTISH.search(school) and duration is None):
             out.append({"school": school, "degree": degree, "duration": duration})
     return out[:25]
+
+
+_ENDORSE_COUNT = _re.compile(r"^(\d[\d,]*)\s+endorsements?$", _re.I)
+_ENDORSE_JUNK = _re.compile(r"^(Endorsed by\b|·|\d+ (people|person) )", _re.I)
+
+
+def parse_skills(card_flight: str) -> List[dict]:
+    """
+    The skills card is a flat list: <skill>, ['Endorsed by …'], ['N endorsements'],
+    repeated — no section header. Returns [{name, endorsement_count}].
+    Guard: only trust the payload if it actually mentions endorsements.
+    """
+    lv = text_leaves(card_flight)
+    if not lv:
+        return []
+    # wrong card for this profile: it leads with some other section header
+    misfit = {"Experience", "Education", "Interests", "About", "Featured",
+              "Licenses & certifications", "Volunteering", "Organizations"}
+    if lv[0] in misfit:
+        return []
+    out: List[dict] = []
+    for leaf in lv:
+        if leaf in _SECTION_LABELS or _is_junk(leaf) or _ENDORSE_JUNK.match(leaf):
+            continue
+        m = _ENDORSE_COUNT.match(leaf)
+        if m:
+            if out and out[-1]["endorsement_count"] is None:
+                out[-1]["endorsement_count"] = int(m.group(1).replace(",", ""))
+            continue
+        if 1 <= len(leaf) <= 80:
+            out.append({"name": leaf, "endorsement_count": None})
+    return out[:60]
 
 
 def split_date_range(duration: Optional[str]):

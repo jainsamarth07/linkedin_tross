@@ -41,17 +41,20 @@ _JUNK_LEAF = re.compile(
 
 
 def _biggest_image(html: str, kind: str) -> Optional[str]:
+    # URLs may be JS-escaped (\/), HTML-entity-escaped (&amp;), or plain;
+    # and the transform is one of shrink_ / scale_ / crop_.
+    src = _html.unescape(html.replace("\\/", "/").replace("\\u002F", "/"))
     best, best_w = None, -1
     pat = re.compile(
-        r'https://media\.licdn\.com/dms/image/[^\s"\'\\]*'
+        r'https://media\.licdn\.com/dms/image/[^\s"\'\\<>]*'
         + re.escape(kind)
-        + r"-shrink_(\d+)_\d+[^\s\"'\\]*"
+        + r"-(?:shrink|scale|crop)_(\d+)_\d+[^\s\"'\\<>]*"
     )
-    for m in pat.finditer(html):
+    for m in pat.finditer(src):
         w = int(m.group(1))
         if w > best_w:
             best_w, best = w, m.group(0)
-    return _html.unescape(best) if best else None
+    return best
 
 
 def extract_profile_id(html: str) -> Optional[str]:
@@ -164,11 +167,17 @@ def parse_top_card(html: str, slug: Optional[str] = None) -> Dict[str, Optional[
             website = lv
             break
 
+    # The top card sometimes renders "<current company> · <school>" as one
+    # line — keep just the company.
+    company = card["current_company"]
+    if company and " · " in company:
+        company = company.split(" · ", 1)[0].strip()
+
     return {
         "name": _name(html, blob, slug),
-        "headline": card["headline"],
+        "headline": _html.unescape(card["headline"]) if card["headline"] else None,
         "location": card["location"],
-        "current_company": card["current_company"],
+        "current_company": company,
         "followers": fol.group(1) if fol else None,
         "connections": con.group(1) if con else None,
         "connection_degree": deg.group(1) if deg else None,
