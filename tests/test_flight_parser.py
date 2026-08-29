@@ -162,6 +162,50 @@ def test_parse_skills_wrong_card_returns_empty():
     assert parse_skills(_flight(["Interests", "Bill & Melinda Gates Foundation"])) == []
 
 
+def test_parse_skills_needs_endorsement_lines():
+    # a Part7 payload with positions / projects and NO endorsements -> nothing
+    assert parse_skills(_flight([
+        "Open-Source Software", "ThreatPad",
+        "Threat Intelligence, Cyber Threat Intelligence, OSINT",
+        "Threat Researcher - II at CloudSEK",
+    ])) == []
+
+
+def test_experience_group_then_standalone_entries():
+    fl = _flight([
+        "Experience",
+        "CloudSEK", "3 yrs 1 mo", "Bengaluru, Karnataka, India",
+        "Threat Researcher - II", "Full-time", "Apr 2026 - Present · 5 mos", "On-site",
+        "Cyber Security Analyst", "Internship", "Aug 2023 - Nov 2023 · 4 mos", "Hybrid",
+        "CTF Player", "TryHackMe · Part-time", "May 2020 - Jun 2024 · 4 yrs 2 mos",
+        "Cyber Security Intern", "Haryana Police · Internship", "Jun 2021 - Jul 2021 · 2 mos",
+        "Gurugram, Haryana, India",
+    ])
+    exp = parse_experience(fl)
+    got = [(e["title"], e["company"]) for e in exp]
+    assert ("Threat Researcher - II", "CloudSEK") in got
+    assert ("Cyber Security Analyst", "CloudSEK") in got
+    assert ("CTF Player", "TryHackMe") in got          # group did NOT leak here
+    assert ("Cyber Security Intern", "Haryana Police") in got
+    assert not any(c == "CloudSEK" for t, c in got if t == "CTF Player")
+
+
+def test_education_drops_certs_and_project_rows():
+    fl = _flight([
+        "Education",
+        "Certified Ethical Hacker (CEH) Practical", "EC-Council",
+        "Issued Apr 2022 · Expired Apr 2025", "Credential ID ECC9026814537",
+        "Google Cloud Program", "Qwiklabs", "Issued Dec 2020",
+        "DarkHuntAI", "ThreatPad",
+        "Thapar Institute of Engineering & Technology",
+        "Bachelor of Technology - BTech, Electrical Engineering", "2019 – 2024",
+        "GitHub - bhavikmalhotra/ThreatPad: Open-source note-taking platform for teams.",
+    ])
+    edu = parse_education(fl)
+    assert [e["school"] for e in edu] == ["Thapar Institute of Engineering & Technology"]
+    assert edu[0]["duration"] == "2019 – 2024"
+
+
 def test_employment_suffix_stripped():
     fl = (
         '0:["$","div",null,{"children":['

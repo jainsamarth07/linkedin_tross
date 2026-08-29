@@ -118,12 +118,21 @@ _JUNK_LEAF = _re.compile(
     _re.I,
 )
 
+_EMP = (r"Full-time|Part-time|Self-employed|Freelance|Contract|Internship|"
+        r"Apprenticeship|Seasonal|Permanent|Temporary")
 # " · Full-time", " · Hybrid", " · Remote" etc. tacked onto company/location.
 _EMPLOYMENT_SUFFIX = _re.compile(
-    r"\s*·\s*(Full-time|Part-time|Self-employed|Freelance|Contract|Internship|"
-    r"Apprenticeship|Seasonal|Permanent|Temporary|Hybrid|Remote|On-site)\s*$",
-    _re.I,
-)
+    rf"\s*·\s*({_EMP}|Hybrid|Remote|On-site)\s*$", _re.I)
+# a leaf that is "<Company> · <EmploymentType>" — the standalone-entry marker
+_COMPANY_TYPE = _re.compile(rf"^(.+?)\s*·\s*({_EMP})\s*$", _re.I)
+# school / degree keywords, to keep real education and drop cert/project rows
+_SCHOOL_KW = _re.compile(
+    r"\b(University|College|Institute|School|Academy|Polytechnic|"
+    r"Universit|Universidad|École|Ecole|Hochschule|IIT|IIM|NIT)\b", _re.I)
+_DEGREE_KW = _re.compile(
+    r"\b(Bachelor|Master|Doctor|PhD|Ph\.D|B\.?Tech|M\.?Tech|B\.?E\b|M\.?E\b|"
+    r"B\.?Sc|M\.?Sc|B\.?A\b|M\.?A\b|MBA|BBA|Diploma|Associate|Postgraduate|"
+    r"Undergraduate|Engineering)\b", _re.I)
 _EMPLOYMENT_TYPE = frozenset(
     x.lower() for x in (
         "Full-time", "Part-time", "Self-employed", "Freelance", "Contract",
@@ -206,25 +215,39 @@ def parse_experience(card_flight: str) -> List[dict]:
     lv = section_after(text_leaves(card_flight), "Experience", _SECTION_LABELS)
     out: List[dict] = []
     buf: List[str] = []
-    group_company: Optional[str] = None  # set while inside a company group
+    buf_company: Optional[str] = None      # from a "<Company> · <type>" leaf
+    group_company: Optional[str] = None    # set while inside a company group
     k = 0
     while k < len(lv):
         leaf = lv[k]
 
-        # company GROUP header: <company> immediately followed by a bare tenure
+        # company GROUP header: <company> then a bare tenure ("3 yrs 1 mo"),
+        # optionally then the group's location line.
         if k + 1 < len(lv) and _is_bare_tenure(lv[k + 1]) and not _is_duration(leaf):
             group_company = _strip_suffix(leaf)
             buf = []
+            buf_company = None
             k += 2
+            if k < len(lv) and _is_locationish(lv[k]):
+                k += 1  # skip the group-level location
+            continue
+
+        m = _COMPANY_TYPE.match(leaf)
+        if m and not _is_duration(leaf):
+            # standalone entry ("TryHackMe · Part-time") — ends any group
+            buf_company = m.group(1).strip()
+            group_company = None
+            k += 1
             continue
 
         if _is_duration(leaf):
             role_leaves = [b for b in buf if not _is_employment_type(b)]
-            if group_company:
-                # in a group every role is at group_company; a leading extra
-                # leaf is the PREVIOUS role's trailing location
+            if buf_company:
+                company = buf_company
                 title = role_leaves[-1] if role_leaves else None
+            elif group_company:
                 company = group_company
+                title = role_leaves[-1] if role_leaves else None
                 if len(role_leaves) >= 2 and out and out[-1].get("location") is None:
                     out[-1]["location"] = _strip_suffix(role_leaves[0])
             else:
@@ -234,22 +257,25 @@ def parse_experience(card_flight: str) -> List[dict]:
             location = None
             if k + 1 < len(lv) and _is_locationish(lv[k + 1]):
                 location = _strip_suffix(lv[k + 1])
-            if title:
+            if title or company:
                 out.append({"title": title, "company": company,
                             "duration": leaf, "location": location})
-            buf = []
+            buf, buf_company = [], None
             k += 1
             continue
 
         if _is_locationish(leaf) and out and k > 0 and lv[k - 1] == out[-1]["duration"]:
-            k += 1  # already taken as previous entry's location
+            k += 1
             continue
 
         buf.append(leaf)
         k += 1
 
     role_leaves = [b for b in buf if not _is_employment_type(b)]
-    if group_company and role_leaves:  # trailing dateless role in a group
+    if buf_company and role_leaves:
+        out.append({"title": role_leaves[-1], "company": buf_company,
+                    "duration": None, "location": None})
+    elif group_company and role_leaves:
         out.append({"title": role_leaves[0], "company": group_company,
                     "duration": None, "location": None})
     elif len(role_leaves) >= 2:
@@ -262,6 +288,14 @@ _CERTISH = _re.compile(r"\b(Certified|Certificate|Credential|License|Bootcamp)\b
 
 
 def parse_education(card_flight: str) -> List[dict]:
+    """
+    The Education card often runs straight into Licenses & certifications /
+    Projects with no header leaf between them. We only keep an entry that
+    actually looks like schooling: it has a date range, OR a school-name
+    keyword (University/Institute/School/…), OR a degree keyword
+    (Bachelor/BTech/Diploma/…). Everything else (certs, GitHub project rows)
+    is dropped.
+    """
     lv = section_after(text_leaves(card_flight), "Education", _SECTION_LABELS)
     out: List[dict] = []
     i = 0
@@ -279,9 +313,12 @@ def parse_education(card_flight: str) -> List[dict]:
                 i += 1
             else:
                 break
-        # drop cert rows that leaked in from a section with no header leaf
-        # (mostly the self-view "combined" card)
-        if school and not (_CERTISH.search(school) and duration is None):
+        looks_like_school = (
+            duration is not None
+            or _SCHOOL_KW.search(school or "")
+            or (degree and _DEGREE_KW.search(degree))
+        )
+        if school and looks_like_school and not _CERTISH.search(school):
             out.append({"school": school, "degree": degree, "duration": duration})
     return out[:25]
 
@@ -299,7 +336,11 @@ def parse_skills(card_flight: str) -> List[dict]:
     lv = text_leaves(card_flight)
     if not lv:
         return []
-    # wrong card for this profile: it leads with some other section header
+    # This card slot varies per profile. Only trust it as the skills card if
+    # it actually carries endorsement lines — otherwise it's holding "top
+    # skills" chrome / positions / project names and we return nothing.
+    if not any("endorsement" in x.lower() for x in lv):
+        return []
     misfit = {"Experience", "Education", "Interests", "About", "Featured",
               "Licenses & certifications", "Volunteering", "Organizations"}
     if lv[0] in misfit:
@@ -307,6 +348,8 @@ def parse_skills(card_flight: str) -> List[dict]:
     out: List[dict] = []
     for leaf in lv:
         if leaf in _SECTION_LABELS or _is_junk(leaf) or _ENDORSE_JUNK.match(leaf):
+            continue
+        if " at " in leaf or len(leaf) > 60:  # position / description, not a skill
             continue
         m = _ENDORSE_COUNT.match(leaf)
         if m:
