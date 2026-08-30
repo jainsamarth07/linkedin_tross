@@ -18,6 +18,7 @@ import uuid
 from pathlib import Path
 
 from curl_cffi.requests import AsyncSession
+from curl_cffi.requests.exceptions import TooManyRedirects
 
 from .linkedin_http import (
     BASE_URL,
@@ -102,15 +103,24 @@ class WebClient:
             **ck["extra_headers"],
         }
         async with AsyncSession() as s:
-            r = await s.get(
-                f"{BASE_URL}/in/{slug}/",
-                headers=headers,
-                cookies=ck["cookies"],
-                impersonate=IMPERSONATE_TARGET,
-                proxies=proxies(),
-                allow_redirects=True,
-                timeout=30,
-            )
+            try:
+                r = await s.get(
+                    f"{BASE_URL}/in/{slug}/",
+                    headers=headers,
+                    cookies=ck["cookies"],
+                    impersonate=IMPERSONATE_TARGET,
+                    proxies=proxies(),
+                    allow_redirects=True,
+                    max_redirects=10,
+                    timeout=30,
+                )
+            except TooManyRedirects as e:
+                # A killed session answers page loads with an endless
+                # cookie-delete redirect loop.
+                raise SessionExpiredError(
+                    "profile page: redirect loop — the LinkedIn session cookie "
+                    "is dead (cookie-delete block). Refresh LI_COOKIE_STRING."
+                ) from e
         self._check(r, "profile page")
         html = r.text
         for pat in (_FLAGSHIP_VER, _FLAGSHIP_VER_HTML):
