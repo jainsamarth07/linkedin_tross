@@ -13,10 +13,10 @@ os.environ.setdefault("LI_AT_COOKIE", "test-cookie")
 
 from app import main  # noqa: E402
 from app.models import LinkedInProfile  # noqa: E402
-from app.voyager_client import (  # noqa: E402
+from app.linkedin_http import (  # noqa: E402
     ProfileNotFoundError,
     SessionExpiredError,
-    VoyagerRateLimitedError,
+    RateLimitedError,
 )
 
 client = TestClient(main.app)
@@ -49,7 +49,7 @@ def test_missing_url_param():
         (ValueError("bad url"), 400),
         (SessionExpiredError("expired"), 401),
         (ProfileNotFoundError("nope"), 404),
-        (VoyagerRateLimitedError("slow down"), 429),
+        (RateLimitedError("slow down"), 429),
         (RuntimeError("boom"), 500),
     ],
 )

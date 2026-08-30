@@ -1,6 +1,6 @@
-# Render blueprint. Deploy: push to GitHub, then "New +" -> "Blueprint" in the
-# Render dashboard and point it at this repo. Set the two secret env vars in the
-# dashboard (they are sync: false so they are never stored in the repo).
+# Render blueprint. Deploy: push to GitHub -> Render dashboard -> "New +" ->
+# "Blueprint" -> pick this repo. Fill the sync:false secrets when prompted;
+# they are never stored in the repo.
 services:
   - type: web
     name: linkedin-profile-api
@@ -10,11 +10,10 @@ services:
     healthCheckPath: /health
     autoDeploy: true
     envVars:
-      - key: LI_AT_COOKIE
+      # Full browser cookie header (preferred). See .env.example.
+      - key: LI_COOKIE_STRING
         sync: false
-      - key: LI_JSESSIONID_COOKIE
-        sync: false
-      # Residential/mobile proxy URL. Required on Render — a datacenter IP
-      # gets the LinkedIn session killed after ~1 request without it.
+      # Residential/mobile proxy — required on Render: a datacenter IP gets
+      # the LinkedIn session killed quickly without it.
       - key: OUTBOUND_PROXY
         sync: false

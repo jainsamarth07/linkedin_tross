@@ -3,13 +3,13 @@ import logging
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 
+from .linkedin_http import (
+    ProfileNotFoundError,
+    RateLimitedError,
+    SessionExpiredError,
+)
 from .models import ErrorResponse, LinkedInProfile
 from .scraper import scrape_profile
-from .voyager_client import (
-    ProfileNotFoundError,
-    SessionExpiredError,
-    VoyagerRateLimitedError,
-)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("linkedin_api.main")
@@ -17,9 +17,10 @@ logger = logging.getLogger("linkedin_api.main")
 app = FastAPI(
     title="LinkedIn Profile API",
     description=(
-        "Accepts a public LinkedIn profile URL and returns structured "
-        "profile data by calling LinkedIn's internal Voyager API with an "
-        "authenticated session. See README.md for setup and limitations."
+        "Accepts a public LinkedIn profile URL and returns structured profile "
+        "data, reverse-engineered from LinkedIn's own web endpoints (the "
+        "profile page + its Server-Driven-UI component calls) with an "
+        "authenticated session. See README.md for approach and limitations."
     ),
     version="1.0.0",
 )
@@ -56,7 +57,7 @@ async def get_profile(
         raise HTTPException(status_code=401, detail=str(e))
     except ProfileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except VoyagerRateLimitedError as e:
+    except RateLimitedError as e:
         raise HTTPException(status_code=429, detail=str(e))
     except Exception as e:
         logger.exception("Unhandled error scraping profile %s", url)

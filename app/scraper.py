@@ -1,19 +1,17 @@
 """
 Orchestrates a profile fetch against LinkedIn's current web app.
 
-  1. GET /in/<slug>/                     -> top card (name, headline, location,
-                                            current company, followers, degree,
-                                            photos, profile-id)   [1 request]
-  2. POST rsc-action component x3        -> about / experience / education
-                                            [best-effort; may be blocked]
+  1. GET /in/<slug>/                 -> top card (name, headline, location,
+                                        current company, followers, degree,
+                                        photos, profile-id)          [1 request]
+  2. POST rsc-action component x4    -> about / experience / education / skills
+                                        [best-effort; may be blocked]
 
-Step 1 is the reliable core. Step 2 adds the detail sections when the
-session survives the extra calls; if a card call is blocked the section
-comes back empty with a warning rather than failing the whole request.
-Disable step 2 entirely with FETCH_DETAIL_CARDS=0.
+Step 1 is the reliable core. Step 2 adds the detail sections when the session
+survives the extra calls; a blocked card yields an empty section + a warning,
+not a failed request. Disable step 2 with FETCH_DETAIL_CARDS=0.
 """
 
-import logging
 from datetime import datetime, timezone
 
 from .flight_parser import (
@@ -24,23 +22,21 @@ from .flight_parser import (
     parse_skills,
     split_date_range,
 )
-from .models import Education, Experience, LinkedInProfile, ProfileImages, Skill
-from .page_parser import parse_top_card
-from .voyager_client import (
+from .linkedin_http import (
+    RateLimitedError,
     SessionExpiredError,
-    VoyagerRateLimitedError,
     extract_public_identifier,
 )
+from .models import Education, Experience, LinkedInProfile, ProfileImages, Skill
+from .page_parser import parse_top_card
 from .web_client import (
     CARD_ABOUT,
-    CARD_EDU_SKILLS,
+    CARD_EDUCATION,
     CARD_EXPERIENCE,
     CARD_SKILLS,
     FETCH_DETAIL_CARDS,
     WebClient,
 )
-
-logger = logging.getLogger("linkedin_api.scraper")
 
 
 async def scrape_profile(profile_url: str) -> LinkedInProfile:
@@ -69,12 +65,12 @@ async def scrape_profile(profile_url: str) -> LinkedInProfile:
         for name, fn in (
             (CARD_ABOUT, "about"),
             (CARD_EXPERIENCE, "experience"),
-            (CARD_EDU_SKILLS, "education"),
+            (CARD_EDUCATION, "education"),
             (CARD_SKILLS, "skills"),
         ):
             try:
                 flight = await client.fetch_component(name, slug, profile_id)
-            except (SessionExpiredError, VoyagerRateLimitedError) as e:
+            except (SessionExpiredError, RateLimitedError) as e:
                 warnings.append(
                     f"Detail section '{fn}' unavailable: {type(e).__name__}. "
                     "Top-card data above is still valid."

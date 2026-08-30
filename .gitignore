@@ -6,11 +6,12 @@ venv/
 *.egg-info/
 .pytest_cache/
 .DS_Store
-voyager_raw.json
-dash_profile_raw.json
+# local capture scratch (may contain cookies) — never commit
 *.har
 *.har.txt
-linkedin.har*
 mycurl.txt
-*.curl.txt
 curl*.txt
+*.curl.txt
+
+# challenge brief — not source
+*.pdf
