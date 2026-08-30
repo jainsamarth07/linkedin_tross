@@ -14,11 +14,15 @@ GET /api/profile?url=https://www.linkedin.com/in/<slug>/
 
 ## Live demo
 
-**<https://linkedin-tross.onrender.com>**
+Endpoint: **`https://linkedin-tross.onrender.com/api/profile?url=`** — append
+any public LinkedIn profile URL.
 
 ```bash
-curl -s "https://linkedin-tross.onrender.com/api/profile?url=https://www.linkedin.com/in/williamhgates/" | jq
+curl "https://linkedin-tross.onrender.com/api/profile?url=https://www.linkedin.com/in/williamhgates/" | jq
 ```
+
+Swap `williamhgates` for any profile you want — `.../in/<slug>/`. A plain
+browser hit on that URL works too.
 
 - Docs (Swagger): <https://linkedin-tross.onrender.com/docs>
 - Health: <https://linkedin-tross.onrender.com/health>
@@ -53,14 +57,20 @@ pip install -r requirements.txt
 cp .env.example .env      # then paste your cookie in — see below
 uvicorn app.main:app --reload
 
-curl "http://localhost:8000/api/profile?url=https://www.linkedin.com/in/williamhgates/"
+curl "http://localhost:8000/api/profile?url=https://www.linkedin.com/in/williamhgates/" | jq
 ```
+
+Swap in any public profile URL (`https://www.linkedin.com/in/<slug>/`) to test
+a different person.
 
 Docker:
 
 ```bash
 docker build -t linkedin-profile-api .
-docker run -p 8000:8000 --env-file .env linkedin-profile-api
+docker run --rm --name linkedin_tross -p 8000:8000 --env-file .env linkedin-profile-api
+
+# same test command — the container publishes on localhost:8000
+curl "http://localhost:8000/api/profile?url=https://www.linkedin.com/in/williamhgates/" | jq
 ```
 
 ---
