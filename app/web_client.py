@@ -75,7 +75,7 @@ class WebClient:
             raise SessionExpiredError(
                 f"LinkedIn killed the session on {what} (cookie-delete redirect). "
                 "Refresh LI_COOKIE_STRING; keep request volume low; from a "
-                "datacenter host set a residential OUTBOUND_PROXY."
+                "datacenter host, try a residential OUTBOUND_PROXY."
             )
         if resp.status_code in (301, 302, 303):
             raise SessionExpiredError(

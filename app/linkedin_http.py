@@ -28,10 +28,11 @@ LI_COOKIE_STRING = os.environ.get("LI_COOKIE_STRING") or None
 LI_AT_COOKIE = os.environ.get("LI_AT_COOKIE") or None
 LI_JSESSIONID_COOKIE = os.environ.get("LI_JSESSIONID_COOKIE") or None
 
-# Outbound proxy for the LinkedIn calls. LinkedIn scores datacenter IPs
-# (Render/Fly/…) as high-risk regardless of how clean the request looks, so
-# a cloud deployment needs to egress through a residential/mobile proxy.
-# e.g. http://user:pass@gate.example.com:7000 — unset = direct.
+# Optional outbound proxy for the LinkedIn calls. Datacenter IPs (Render/Fly/…)
+# are lower-trust, but in testing the SDUI path still worked from Render with
+# this unset. Set a residential/mobile proxy for sustained volume or if a cloud
+# host starts getting 401s. e.g. http://user:pass@gate.example.com:7000 —
+# unset = direct.
 OUTBOUND_PROXY = os.environ.get("OUTBOUND_PROXY") or None
 
 # curl_cffi browser profile for the TLS/HTTP2 fingerprint.

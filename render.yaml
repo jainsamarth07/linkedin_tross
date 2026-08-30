@@ -13,7 +13,8 @@ services:
       # Full browser cookie header (preferred). See .env.example.
       - key: LI_COOKIE_STRING
         sync: false
-      # Residential/mobile proxy — required on Render: a datacenter IP gets
-      # the LinkedIn session killed quickly without it.
+      # Optional residential/mobile proxy. The SDUI path has held from Render's
+      # datacenter IP with just the cookie; add this only for sustained volume
+      # or if the host starts getting 401s. Leave unset to egress directly.
       - key: OUTBOUND_PROXY
         sync: false

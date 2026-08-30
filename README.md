@@ -95,7 +95,7 @@ trips LinkedIn's checkpoints; copying a cookie doesn't.)
 |---|---|---|
 | `LI_COOKIE_STRING` | **Yes** (preferred) | Full browser `cookie:` header (~15 cookies incl. the PerimeterX `_px3`). |
 | `LI_AT_COOKIE` / `LI_JSESSIONID_COOKIE` | fallback | Used only if `LI_COOKIE_STRING` is unset. |
-| `OUTBOUND_PROXY` | **Yes** on a datacenter host | `http://user:pass@host:port` — routes the LinkedIn calls through a residential/mobile proxy. LinkedIn scores datacenter IPs as high-risk. Unset = direct (fine from a home IP). |
+| `OUTBOUND_PROXY` | No (recommended for volume) | `http://user:pass@host:port` — routes the LinkedIn calls through a residential/mobile proxy. Datacenter IPs are lower-trust; in this project's testing the SDUI path still held from Render with **no** proxy, but adding one is the first fix if a cloud host starts returning `401`. Unset = direct (fine from a home IP). |
 | `FETCH_DETAIL_CARDS` | No | `0` → return the top card only (1 request instead of 5). Default on. |
 | `IMPERSONATE_TARGET` | No | `curl_cffi` TLS profile. Default `chrome136`. |
 | `PORT` | No | Bind port (PaaS hosts inject it; default `8000`). |
@@ -241,12 +241,15 @@ Honest list — these are inherent to unofficial access, not bugs to fix later.
   It expires or gets invalidated (password change, suspicious-activity flag,
   logging out elsewhere) and there is **no auto-relogin** — the request fails
   `401` with a "refresh the cookie" message.
-- **Datacenter IPs are flagged.** From a cloud host (Render/Fly/…) you must
-  set `OUTBOUND_PROXY` to a residential/mobile proxy, or the session dies
-  quickly. From a home IP it's fine for light use. No request
-  throttling/backoff or account-pool is built in — that's what a production
-  version would add. Community-reported sustainable rate on an aged account is
-  ~100–300 profiles/day, paced.
+- **Datacenter IPs are lower-trust — but not blocked.** The SDUI path has
+  held up from Render's datacenter IP with only the full cookie string (no
+  proxy) across this project's testing. It's still the weaker setup: a
+  residential/mobile `OUTBOUND_PROXY` is the recommended hedge for sustained
+  volume, and the first thing to add if a cloud host starts returning `401`.
+  From a home IP no proxy is needed. No request throttling/backoff or
+  account-pool is built in — that's what a production version would add.
+  Community-reported sustainable rate on an aged account is ~100–300
+  profiles/day, paced.
 - **Experience / Education / Skills are best-effort.** They're parsed from
   rendered UI (React-Flight text leaves), not a clean data API. Ordinary
   roles, company-grouped roles and board positions parse correctly; unusual
@@ -300,9 +303,9 @@ Ships a platform-agnostic **`Dockerfile`** (honours `$PORT`, binds
 `0.0.0.0`) and a **`render.yaml`** blueprint.
 
 **Render:** push to GitHub → dashboard → **New +** → **Blueprint** → pick the
-repo → set `LI_COOKIE_STRING` and `OUTBOUND_PROXY` when prompted (both
-`sync: false`, never in the repo) → deploy. Free tier sleeps after ~15 min
-idle; a free uptime pinger on `/health` keeps it warm.
+repo → set `LI_COOKIE_STRING` when prompted (and `OUTBOUND_PROXY` if you have
+one — optional; both `sync: false`, never in the repo) → deploy. Free tier
+sleeps after ~15 min idle; a free uptime pinger on `/health` keeps it warm.
 
 **Any other Docker host** (Fly.io, Railway, a VM): the `Dockerfile` is all you
 need — set the same env vars.

@@ -15,3 +15,6 @@ curl*.txt
 
 # challenge brief — not source
 *.pdf
+
+# internal working notes — not part of the submission
+ARCHITECTURE.md
