@@ -145,9 +145,10 @@ URLs shortened):
     "background_photo_url": "https://media.licdn.com/dms/image/v2/.../profile-displaybackgroundimage-…_1400/…"
   },
   "experience": [
-    { "title": "Co-chair",  "company": "Gates Foundation",    "duration": "2000 – Present", "start_date": "2000", "end_date": null, "location": null },
-    { "title": "Founder",    "company": "Breakthrough Energy", "duration": "2015 – Present", "start_date": "2015", "end_date": null, "location": null },
-    { "title": "Co-founder", "company": "Microsoft",           "duration": "1975 – Present", "start_date": "1975", "end_date": null, "location": null }
+    // `description` is the role blurb when the card carries one (bulleted or a one-liner); null when it doesn't
+    { "title": "Co-chair",  "company": "Gates Foundation",    "duration": "2000 – Present", "start_date": "2000", "end_date": null, "location": null, "description": null },
+    { "title": "Founder",    "company": "Breakthrough Energy", "duration": "2015 – Present", "start_date": "2015", "end_date": null, "location": null, "description": null },
+    { "title": "Co-founder", "company": "Microsoft",           "duration": "1975 – Present", "start_date": "1975", "end_date": null, "location": null, "description": null }
   ],
   "education": [
     { "school": "Harvard University", "degree": null, "duration": "1973 – 1975", "start_date": "1973", "end_date": "1975" },
@@ -261,11 +262,18 @@ Honest list — these are inherent to unofficial access, not bugs to fix later.
   Community-reported sustainable rate on an aged account is ~100–300
   profiles/day, paced.
 - **Experience / Education / Skills are best-effort.** They're parsed from
-  rendered UI (React-Flight text leaves), not a clean data API. Ordinary
-  roles, company-grouped roles and board positions parse correctly; unusual
-  layouts (roles with no dates, heavy nesting, media attachments) can
-  mis-group or drop an entry. It degrades to *empty/partial*, not
-  confidently-wrong. The **top card is unaffected**.
+  rendered UI, not a clean data API. Experience walks the card's actual
+  component tree (title/company/tenure vs. date/location vs. description are
+  distinguished by element type), so ordinary roles, company-grouped roles,
+  board positions and per-role blurbs parse correctly; Education / Skills use
+  a flatter text-leaf scan. Unusual layouts (roles with no dates, a blurb that
+  itself spells out a year range) can still mis-group or drop an entry. It
+  degrades to *empty/partial*, not confidently-wrong. The **top card is
+  unaffected**.
+- **`experience[].description`** is filled from the role's blurb — a bulleted
+  block or a one-line tagline — mapped to its entry by tree position. Media
+  attachments and link-preview cards that render in the same slot are
+  filtered out; `null` when there's no blurb.
 - **Don't scrape your own profile with your own cookie.** LinkedIn serves a
   self-view (edit + analytics) layout; the scraper detects this, filters what
   it can, and adds a `warnings` note. Use a different account's cookie for a
@@ -326,7 +334,7 @@ need — set the same env vars.
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest -q          # 32 tests, no network (parsers run against committed captures)
+python -m pytest -q          # 36 tests, no network (parsers run against committed captures)
 ```
 
 To re-capture live card payloads after LinkedIn ships a change: open a profile

@@ -91,6 +91,7 @@ async def scrape_profile(profile_url: str) -> LinkedInProfile:
                             title=x["title"], company=x["company"],
                             duration=x["duration"], start_date=s, end_date=en,
                             location=x.get("location"),
+                            description=x.get("description"),
                         )
                     )
             elif fn == "education":

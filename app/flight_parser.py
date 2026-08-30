@@ -14,6 +14,7 @@ which is enough to read a profile card when combined with the section
 landmarks ("About", "Experience", "Education", ...).
 """
 
+import json
 import re
 from typing import List, Optional
 
@@ -203,84 +204,289 @@ def parse_about(card_flight: str) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Experience: a small React-Flight *tree* resolver.
+#
+# text_leaves() is a flat byte-order scan — good enough for About / Education /
+# Skills, but the Experience card puts the role blurbs in lazily-resolved
+# component rows (`$L..` refs, expandable-text / bulleted `$2*` nodes) that
+# stream out of order relative to their roles. To read descriptions and to get
+# grouped roles right we walk the actual component tree in display order and
+# tag every text node as HEADER (a <p>: title / company / tenure line),
+# DETAIL (a textProps line: date / location) or DESC (an expandable / bulleted
+# block: the role description).
+# ---------------------------------------------------------------------------
+
+_ROW = re.compile(r"(?m)^([0-9a-f]+):(.*(?:\n(?![0-9a-f]+:).*)*)")
+_REF = re.compile(r"^\$L?([0-9a-f]+)$")
+_TAGPFX = re.compile(r'^[A-Za-z]+(?=[\[{"])')
+_HEADER, _DETAIL, _DESC = "HEADER", "DETAIL", "DESC"
+
+
+def _load_flight_rows(blob: str) -> dict:
+    # raw rsc-action payload — do NOT unescape (it would corrupt the JSON rows)
+    rows: dict = {}
+    for m in _ROW.finditer(blob):
+        rid, val = m.group(1), m.group(2)
+        pfx = _TAGPFX.match(val)          # strip a Flight tag letter ("I[...]", "HL[...]")
+        if pfx:
+            val = val[pfx.end():]
+        try:
+            rows[rid] = json.loads(val)
+        except Exception:
+            rows[rid] = None
+    return rows
+
+
+def _is_elem(n) -> bool:
+    return isinstance(n, list) and len(n) >= 4 and n[0] == "$"
+
+
+def _elem_strings(node, rows, seen) -> List[str]:
+    """Human text under an element subtree, in order, resolving $L refs."""
+    acc: List[str] = []
+
+    def rec(n):
+        if isinstance(n, str):
+            m = _REF.match(n)
+            if m and m.group(1) in rows:
+                key = ("s", m.group(1))
+                if key in seen:
+                    return
+                seen.add(key)
+                rec(rows[m.group(1)])
+                return
+            if n and not n.startswith("$"):
+                acc.append(n)
+            return
+        if _is_elem(n):
+            props = n[3]
+            if isinstance(props, dict):
+                if isinstance(props.get("children"), (str, list)):
+                    rec(props["children"])
+                tp = props.get("textProps")
+                if isinstance(tp, dict) and isinstance(tp.get("children"), (str, list)):
+                    rec(tp["children"])
+            return
+        if isinstance(n, list):
+            for x in n:
+                rec(x)
+
+    rec(node)
+    return acc
+
+
+def _flight_stream(blob: str) -> List[tuple]:
+    """Ordered (kind, text) for the experience card, in display order."""
+    rows = _load_flight_rows(blob)
+    root = rows.get("0")
+    if root is None:
+        cand = [v for v in rows.values() if isinstance(v, (list, dict))]
+        root = max(cand, key=lambda v: len(json.dumps(v)), default=None)
+
+    out: List[tuple] = []
+    seen: set = set()
+
+    def walk(node):
+        if isinstance(node, str):
+            m = _REF.match(node)
+            if m and m.group(1) in rows:
+                key = ("w", m.group(1))
+                if key in seen:
+                    return
+                seen.add(key)
+                walk(rows[m.group(1)])
+            return
+        if _is_elem(node):
+            tag, props = node[1], node[3]
+            if not isinstance(props, dict):
+                return
+            tp = props.get("textProps")
+            if isinstance(tp, dict) and "children" in tp:
+                tch = tp["children"]
+                expandable = any(
+                    k in tp for k in ("expandButtonText", "lineClamp", "hasShowMore")
+                )
+                if not expandable:
+                    bk = props.get("bindingKey")
+                    if isinstance(bk, dict) and "expandable_text_block" in json.dumps(bk):
+                        expandable = True
+                nested = isinstance(tch, list) and tch and isinstance(tch[0], list)
+                txt = " ".join(_elem_strings(node, rows, set())).strip()
+                if txt:
+                    out.append((_DESC if (expandable or nested) else _DETAIL, txt))
+                return
+            if tag in ("p", "h1", "h2", "h3", "span"):
+                txt = " ".join(_elem_strings(node, rows, set())).strip()
+                if txt:
+                    out.append((_HEADER, txt))
+                return
+            for k in ("initialItems", "item", "children"):
+                if k in props:
+                    walk(props[k])
+            for k, v in props.items():
+                if k not in ("initialItems", "item", "children", "textProps"):
+                    walk(v)
+            return
+        if isinstance(node, list):
+            for x in node:
+                walk(x)
+            return
+        if isinstance(node, dict):
+            for k in ("initialItems", "item", "children"):
+                if k in node:
+                    walk(node[k])
+            for k, v in node.items():
+                if k not in ("initialItems", "item", "children"):
+                    walk(v)
+
+    walk(root)
+    cleaned: List[tuple] = []
+    for kind, t in out:
+        t = re.sub(r"\s+", " ", t).strip()
+        if t:
+            cleaned.append((kind, t))
+    return cleaned
+
+
+# "<EmploymentType> · <tenure>" — a company-group header line (roles follow)
+_GROUP_TENURE = _re.compile(
+    r"^(Full-time|Part-time|Self-employed|Freelance|Contract|Internship|"
+    r"Apprenticeship|Seasonal|Permanent|Temporary)\s*·\s*\d+\s*"
+    r"(yr|yrs|year|years|mo|mos|month|months)(\s+\d+\s*(mo|mos|month|months))?$",
+    _re.I,
+)
+# media attachments / app-store links that render in the same slot as a blurb
+_MEDIA_JUNK = _re.compile(
+    r"://|\.(pdf|png|jpe?g|gif|docx?|pptx?|xlsx?|csv|zip|mp4|mov)$|"
+    r"^(Playstore|Play Store|App Store|Download on|View on) ",
+    _re.I,
+)
+_LINKCARD = _re.compile(r"^.{1,45} \| .{1,70}$")     # "Home | OnlyDrops" preview title
+_PLACEISH = _re.compile(r"^[A-Z][\w.&'-]*(?:[ ,]+[A-Za-z][\w.&'-]*){0,3}$")
+
+
+def _looks_like_place(s: str) -> bool:
+    return len(s) <= 40 and bool(_PLACEISH.match(s)) and not _is_duration(s)
+
+
+def _is_group_tenure(s: str) -> bool:
+    return _is_bare_tenure(s) or bool(_GROUP_TENURE.match(s))
+
+
+def _exp_junk(s: str) -> bool:
+    return _is_junk(s) or bool(_MEDIA_JUNK.search(s)) or bool(_LINKCARD.match(s))
+
+
+def _clean_desc(s: str) -> str:
+    s = _re.sub(r"\s+", " ", s).strip()
+    s = _re.sub(r"\s*…\s*(see|show)\s+more\s*$", "", s, flags=_re.I).strip()
+    return s[:3000]
+
+
 def parse_experience(card_flight: str) -> List[dict]:
     """
-    An entry renders as: title, company, duration, [optional location] — with
-    the occasional extra line. The **duration** line (a year + '–'/'to'/
-    'Present') is the only reliable per-entry anchor, so we buffer leaves and
-    flush an entry each time we hit one, taking the last two buffered leaves
-    as (title, company). Entries LinkedIn renders without any date are not
-    emitted (rare, and guessing them mis-aligns everything after).
+    Walk the card's component tree in display order. A `duration` line (year +
+    '–'/'to'/'Present') closes an entry, taking the buffered HEADER text as
+    (title, company); a company GROUP header (`<Company>` then a bare/typed
+    tenure) makes the roles under it inherit that company; a DETAIL line right
+    after a duration is the entry's location; a DESC block is its description.
+    Undated entries are dropped. On any structural surprise, returns `[]`.
     """
-    lv = section_after(text_leaves(card_flight), "Experience", _SECTION_LABELS)
+    try:
+        stream = _flight_stream(card_flight)
+    except Exception:  # noqa: BLE001 - malformed / changed payload => no experience
+        return []
+
+    start = next((i for i, (_k, t) in enumerate(stream) if t == "Experience"), None)
+    items = stream[start + 1:] if start is not None else stream
+
     out: List[dict] = []
-    buf: List[str] = []
-    buf_company: Optional[str] = None      # from a "<Company> · <type>" leaf
-    group_company: Optional[str] = None    # set while inside a company group
-    k = 0
-    while k < len(lv):
-        leaf = lv[k]
+    buf: List[str] = []                 # pending HEADER text (title / company)
+    buf_company: Optional[str] = None   # from a "<Company> · <type>" HEADER
+    group_company: Optional[str] = None
+    pending_loc: Optional[dict] = None  # entry still eligible for a location line
+    expect_group_loc = False
+    i, n = 0, len(items)
 
-        # company GROUP header: <company> then a bare tenure ("3 yrs 1 mo"),
-        # optionally then the group's location line.
-        if k + 1 < len(lv) and _is_bare_tenure(lv[k + 1]) and not _is_duration(leaf):
-            group_company = _strip_suffix(leaf)
-            buf = []
-            buf_company = None
-            k += 2
-            if k < len(lv) and _is_locationish(lv[k]):
-                k += 1  # skip the group-level location
+    while i < n:
+        kind, text = items[i]
+
+        if kind == _DESC:
+            if out and not out[-1]["description"] and not _exp_junk(text):
+                out[-1]["description"] = _clean_desc(text)
+            i += 1
             continue
 
-        m = _COMPANY_TYPE.match(leaf)
-        if m and not _is_duration(leaf):
-            # standalone entry ("TryHackMe · Part-time") — ends any group
-            buf_company = m.group(1).strip()
-            group_company = None
-            k += 1
+        if text in _SECTION_LABELS and text != "Experience":
+            break
+        if _exp_junk(text):
+            i += 1
             continue
 
-        if _is_duration(leaf):
-            role_leaves = [b for b in buf if not _is_employment_type(b)]
+        if _is_duration(text):          # closes an entry, whatever element type
+            fields = [t for t in buf if not _is_employment_type(t)]
             if buf_company:
-                company = buf_company
-                title = role_leaves[-1] if role_leaves else None
+                titles = [t for t in fields if not _COMPANY_TYPE.match(t)]
+                company, title = buf_company, (titles[-1] if titles else None)
             elif group_company:
-                company = group_company
-                title = role_leaves[-1] if role_leaves else None
-                if len(role_leaves) >= 2 and out and out[-1].get("location") is None:
-                    out[-1]["location"] = _strip_suffix(role_leaves[0])
+                company, title = group_company, (fields[-1] if fields else None)
+            elif len(fields) >= 2:
+                title, company = fields[-2], _strip_suffix(fields[-1])
             else:
-                title = role_leaves[-2] if len(role_leaves) >= 2 else (
-                    role_leaves[-1] if role_leaves else None)
-                company = _strip_suffix(role_leaves[-1]) if len(role_leaves) >= 2 else None
-            location = None
-            if k + 1 < len(lv) and _is_locationish(lv[k + 1]):
-                location = _strip_suffix(lv[k + 1])
-            if title or company:
-                out.append({"title": title, "company": company,
-                            "duration": leaf, "location": location})
+                title, company = (fields[-1] if fields else None), None
+            entry = {"title": title, "company": company, "duration": text,
+                     "location": None, "description": None}
+            out.append(entry)
             buf, buf_company = [], None
-            k += 1
+            pending_loc = entry
+            expect_group_loc = False
+            i += 1
             continue
 
-        if _is_locationish(leaf) and out and k > 0 and lv[k - 1] == out[-1]["duration"]:
-            k += 1
+        if expect_group_loc and _is_locationish(text):
+            expect_group_loc = False     # swallow the group's own location line
+            i += 1
             continue
 
-        buf.append(leaf)
-        k += 1
+        if pending_loc is not None:
+            consumed = False
+            if pending_loc["location"] is None and (
+                _is_locationish(text) or (kind == _DETAIL and _looks_like_place(text))
+            ):
+                pending_loc["location"] = _strip_suffix(text)
+                consumed = True
+            pending_loc = None           # only the item directly after a duration
+            if consumed:
+                i += 1
+                continue
 
-    role_leaves = [b for b in buf if not _is_employment_type(b)]
-    if buf_company and role_leaves:
-        out.append({"title": role_leaves[-1], "company": buf_company,
-                    "duration": None, "location": None})
-    elif group_company and role_leaves:
-        out.append({"title": role_leaves[0], "company": group_company,
-                    "duration": None, "location": None})
-    elif len(role_leaves) >= 2:
-        out.append({"title": role_leaves[-2], "company": _strip_suffix(role_leaves[-1]),
-                    "duration": None, "location": None})
+        if kind == _DETAIL:
+            i += 1                        # stray unmatched date / location — drop
+            continue
+
+        # kind == HEADER
+        if _is_group_tenure(text):
+            if buf:
+                group_company = _strip_suffix(buf[-1])
+                buf = []
+            buf_company = None
+            expect_group_loc = True
+            pending_loc = None
+            i += 1
+            continue
+
+        m = _COMPANY_TYPE.match(text)
+        if m and not _is_duration(text):
+            buf_company = m.group(1).strip()   # standalone entry — ends any group
+            group_company = None
+            buf.append(text)
+            i += 1
+            continue
+
+        buf.append(text)
+        i += 1
+
     return out[:40]
 
 

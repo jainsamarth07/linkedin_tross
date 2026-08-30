@@ -27,6 +27,28 @@ def _flight(leaves):
     )
     return '0:["$","div",null,{"children":[' + kids + "]}]"
 
+
+def _exp_card(rows):
+    """
+    Build an experience-card Flight payload from (kind, text) rows, mirroring
+    the element types the real card uses:
+      'h' -> HEADER  <p>                       (title / company / tenure line)
+      'd' -> DETAIL  <p> with plain textProps  (date / location)
+      'x' -> DESC    <p> with expandable text  (role blurb)
+    """
+    def node(kind, t):
+        j = json.dumps(t)
+        if kind == "h":
+            return f'["$","p",null,{{"children":[{j}]}}]'
+        if kind == "d":
+            return f'["$","p",null,{{"textProps":{{"maxLineCountExpression":0,"children":[{j}]}}}}]'
+        if kind == "x":
+            return f'["$","p",null,{{"textProps":{{"expandButtonText":"more","children":[{j}]}}}}]'
+        raise ValueError(kind)
+    kids = ",".join(node(k, t) for k, t in rows)
+    return '0:["$","div",null,{"children":[' + kids + "]}]"
+
+
 CAP = Path(__file__).parent / "captures"
 
 
@@ -125,14 +147,14 @@ def test_not_self_view_for_third_party_capture():
 
 def test_parse_experience_company_grouped():
     # 3 roles at one employer, rendered as a group header + bare tenure
-    fl = _flight([
-        "Experience",
-        "JPMorganChase", "3 yrs 7 mos",
-        "Software Engineer II", "Full-time", "Nov 2025 - Present · 10 mos",
-        "Software Engineer", "Full-time", "Jul 2023 - Oct 2025 · 2 yrs 4 mos",
-        "Bengaluru",
-        "Software Engineer", "Internship", "Feb 2023 - Jun 2023 · 5 mos",
-        "Bengaluru, Karnataka, India",
+    fl = _exp_card([
+        ("h", "Experience"),
+        ("h", "JPMorganChase"), ("h", "3 yrs 7 mos"),
+        ("h", "Software Engineer II"), ("h", "Full-time"), ("d", "Nov 2025 - Present · 10 mos"),
+        ("h", "Software Engineer"), ("h", "Full-time"), ("d", "Jul 2023 - Oct 2025 · 2 yrs 4 mos"),
+        ("d", "Bengaluru"),
+        ("h", "Software Engineer"), ("h", "Internship"), ("d", "Feb 2023 - Jun 2023 · 5 mos"),
+        ("d", "Bengaluru, Karnataka, India"),
     ])
     exp = parse_experience(fl)
     assert [e["title"] for e in exp] == [
@@ -172,14 +194,14 @@ def test_parse_skills_needs_endorsement_lines():
 
 
 def test_experience_group_then_standalone_entries():
-    fl = _flight([
-        "Experience",
-        "CloudSEK", "3 yrs 1 mo", "Bengaluru, Karnataka, India",
-        "Threat Researcher - II", "Full-time", "Apr 2026 - Present · 5 mos", "On-site",
-        "Cyber Security Analyst", "Internship", "Aug 2023 - Nov 2023 · 4 mos", "Hybrid",
-        "CTF Player", "TryHackMe · Part-time", "May 2020 - Jun 2024 · 4 yrs 2 mos",
-        "Cyber Security Intern", "Haryana Police · Internship", "Jun 2021 - Jul 2021 · 2 mos",
-        "Gurugram, Haryana, India",
+    fl = _exp_card([
+        ("h", "Experience"),
+        ("h", "CloudSEK"), ("h", "3 yrs 1 mo"), ("d", "Bengaluru, Karnataka, India"),
+        ("h", "Threat Researcher - II"), ("h", "Full-time"), ("d", "Apr 2026 - Present · 5 mos"), ("d", "On-site"),
+        ("h", "Cyber Security Analyst"), ("h", "Internship"), ("d", "Aug 2023 - Nov 2023 · 4 mos"), ("d", "Hybrid"),
+        ("h", "CTF Player"), ("h", "TryHackMe · Part-time"), ("d", "May 2020 - Jun 2024 · 4 yrs 2 mos"),
+        ("h", "Cyber Security Intern"), ("h", "Haryana Police · Internship"), ("d", "Jun 2021 - Jul 2021 · 2 mos"),
+        ("d", "Gurugram, Haryana, India"),
     ])
     exp = parse_experience(fl)
     got = [(e["title"], e["company"]) for e in exp]
@@ -207,18 +229,68 @@ def test_education_drops_certs_and_project_rows():
 
 
 def test_employment_suffix_stripped():
-    fl = (
-        '0:["$","div",null,{"children":['
-        '["$","p",null,{"children":["Experience"]}],'
-        '["$","p",null,{"children":["Engineer"]}],'
-        '["$","p",null,{"children":["Acme Corp · Full-time"]}],'
-        '["$","p",null,{"children":["Jan 2020 - Present · 6 yrs"]}],'
-        '["$","p",null,{"children":["Berlin Area · Hybrid"]}]'
-        ']}]'
-    )
+    fl = _exp_card([
+        ("h", "Experience"),
+        ("h", "Engineer"), ("h", "Acme Corp · Full-time"),
+        ("d", "Jan 2020 - Present · 6 yrs"), ("d", "Berlin Area · Hybrid"),
+    ])
     e = parse_experience(fl)[0]
+    assert e["title"] == "Engineer"
     assert e["company"] == "Acme Corp"
     assert e["location"] == "Berlin Area"
+
+
+def test_experience_bulleted_descriptions_map_to_their_role():
+    fl = _exp_card([
+        ("h", "Experience"),
+        ("h", "CloudSEK"), ("h", "Full-time · 3 yrs 1 mo"), ("d", "Bengaluru, Karnataka, India"),
+        ("h", "Threat Researcher - II"), ("h", "Full-time"), ("d", "Apr 2026 - Present · 5 mos"), ("d", "On-site"),
+        ("x", "• Built automation pipelines. • Led 55 engagements."),
+        ("h", "Threat Researcher - I"), ("h", "Full-time"), ("d", "Dec 2023 - Mar 2026 · 2 yrs 4 mos"), ("d", "On-site"),
+        ("x", "• Dark web investigations."),
+    ])
+    exp = parse_experience(fl)
+    assert [e["title"] for e in exp] == ["Threat Researcher - II", "Threat Researcher - I"]
+    assert all(e["company"] == "CloudSEK" for e in exp)
+    assert exp[0]["description"] == "• Built automation pipelines. • Led 55 engagements."
+    assert exp[1]["description"] == "• Dark web investigations."
+
+
+def test_experience_inline_short_description():
+    fl = _exp_card([
+        ("h", "Experience"),
+        ("h", "Software Engineer"), ("h", "Microsoft · Full-time"), ("d", "Nov 2025 - Present · 10 mos"),
+        ("d", "Dublin, County Dublin, Ireland"),
+        ("x", "Bringing Azure to Sovereign Clouds."),
+        ("h", "Research Scholar"), ("h", "University of Galway · Internship"), ("d", "Jun 2023 - Aug 2023 · 3 mos"),
+        ("d", "Galway, County Galway, Ireland · Hybrid"),
+        ("x", "Used GANs and VAEs to synthesize spectroscopic data."),
+    ])
+    exp = parse_experience(fl)
+    assert exp[0]["title"] == "Software Engineer" and exp[0]["company"] == "Microsoft"
+    assert exp[0]["location"] == "Dublin, County Dublin, Ireland"
+    assert exp[0]["description"] == "Bringing Azure to Sovereign Clouds."
+    assert exp[1]["description"] == "Used GANs and VAEs to synthesize spectroscopic data."
+
+
+def test_experience_media_and_linkcards_are_not_descriptions():
+    fl = _exp_card([
+        ("h", "Experience"),
+        ("h", "Analyst"), ("h", "Mettl · Internship"), ("d", "Jan 2023 - Jun 2023 · 6 mos"),
+        ("d", "Gurugram, Haryana, India"),
+        ("h", "Internship certificate - Aditya Gupta.pdf"),
+        ("h", "Founder"), ("h", "OnlyTools · Self-employed"), ("d", "Jan 2025 - Present · 1 yr 8 mos"),
+        ("x", "Playstore - https://play.google.com/store/apps/details?id=com.x"),
+    ])
+    exp = parse_experience(fl)
+    assert [e["title"] for e in exp] == ["Analyst", "Founder"]
+    assert exp[0]["description"] is None
+    assert exp[1]["description"] is None
+
+
+def test_experience_entries_always_carry_a_description_key():
+    exp = parse_experience(_load("card_experience.flight"))
+    assert exp and all(e["description"] is None for e in exp)
 
 
 @pytest.mark.parametrize(
